@@ -1,4 +1,4 @@
-dataset_dir: /data8/zhangdeming/cache/huggingface/datasets/zai-org/LongBench/data
+dataset_dir: /data8/zhangdeming/.cache/huggingface/datasets/zai-org/LongBench/data
 desc:  "tempelete"
 
 exp_config:
