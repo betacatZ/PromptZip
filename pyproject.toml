@@ -15,7 +15,3 @@ dependencies = [
     "transformers==4.57.0",
     "vllm",
 ]
-
-[[tool.uv.index]]
-url = "https://pypi.tuna.tsinghua.edu.cn/simple"
-default = true
