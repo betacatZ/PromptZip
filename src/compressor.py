@@ -6,6 +6,7 @@ import torch.nn.functional as F
 import logging
 import math
 import gc
+import logging
 from abc import ABC
 from typing import List, Union
 from vllm import LLM, SamplingParams
@@ -17,6 +18,7 @@ import tiktoken
 import blingfire
 from sklearn.cluster import KMeans
 import os
+from scipy import stats
 from transformers import (
     DynamicCache,
     AutoConfig,
@@ -27,6 +29,7 @@ from transformers import (
 import copy
 import os
 import sys
+from optimum.onnxruntime import ORTModelForTokenClassification
 
 sys.path.append(os.path.abspath(os.path.join(os.getcwd(), "../src")))
 from util import (
@@ -241,6 +244,61 @@ class PPLCompressor(BaseCompressor):
         input_ids = input_ids.squeeze(0)
         document_ids_1d = input_ids[document_token_start:document_token_end]
         keep_n = max(0, int(ppls_tensor.shape[0] * rate) - 1)
+        # sorted_indices = sorted(range(len(ppls)), key=lambda i: ppls[i])
+        topk_indices = torch.argsort(ppls_tensor)[:keep_n]
+        selected_indices, _ = torch.sort(topk_indices)
+        last_chunk_idx = torch.tensor([ppls_tensor.shape[0] - 1], device=selected_indices.device)
+        selected_indices = torch.cat([selected_indices, last_chunk_idx])
+        compressed_ids = []
+
+        for idx in selected_indices:
+            idx = idx.item()
+            start = idx * chunk_size
+            end = min(start + chunk_size, document_ids_1d.size(0))
+            compressed_ids.extend(document_ids_1d[start:end].tolist())
+
+        compressed_ids = (
+            input_ids.tolist()[:document_token_start] + compressed_ids + input_ids.tolist()[document_token_end:]
+        )
+
+        return self.tokenizer.decode(compressed_ids, skip_special_tokens=True)
+
+    def compress_with_query(
+        self,
+        text: str,
+        query: str,
+        chunk_size: int,
+        rate: float = 0.5,
+    ):
+        query_enc = self.tokenizer(query, add_special_tokens=False)
+        text_enc = self.tokenizer(text, add_special_tokens=False)
+        input_ids = torch.tensor([query_enc["input_ids"] + text_enc["input_ids"]], device=self.device)
+        attention_mask = torch.tensor(
+            [query_enc["attention_mask"] + text_enc["attention_mask"]],
+            device=self.device,
+        )
+
+        print("input id: ", input_ids.shape)
+        print("text id: ", len(text_enc["input_ids"]))
+        document_token_start = len(query_enc["input_ids"])
+        print("document start: ", document_token_start)
+        print(len(text))
+        document_token_end = input_ids.shape[1]
+
+        loss_start = document_token_start
+        loss_end = document_token_end
+        ppls_tensor = self.get_ppl(
+            text=None,
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            chunk_size=chunk_size,
+            loss_start=loss_start,  # 对应 shifted label
+            loss_end=loss_end,
+        )
+
+        input_ids = input_ids.squeeze(0)
+        document_ids_1d = input_ids[document_token_start:document_token_end]
+        keep_n = max(0, int(ppls_tensor.shape[0] * rate) - 1)  # ppls_tensor.shape[0]: num chunks
         # sorted_indices = sorted(range(len(ppls)), key=lambda i: ppls[i])
         topk_indices = torch.argsort(ppls_tensor)[:keep_n]
         selected_indices, _ = torch.sort(topk_indices)
@@ -501,7 +559,439 @@ class RerankCompressor(BaseCompressor):
 
         return origin_list
 
+    # def _chunk_context(self, origin_text, chunk_end_tokens, chunk_size):
+    #     """把一段长文本 origin_text 按照最大长度 chunk_size 切分成多个chunk，每个 chunk 不会超过最大 token 长度， 同时尽量在指定的 chunk_end_tokens（比如句号、逗号之类的分隔符）处断开，此处从后往前便遍历"""
+    #     tokenized_end_tokens = []
+    #     for t in chunk_end_tokens:
+    #         tokens = self.tokenizer.tokenize(t)
+    #         tokenized_end_tokens.extend(tokens)
+    #     max_len = chunk_size
+    #     origin_list = []
+    #     origin_tokens = self.tokenizer.tokenize(origin_text)
+    #     n = len(origin_tokens)
+    #     st = 0
+    #     while st < n:
+    #         if st + max_len > n - 1:
+    #             chunk = self.tokenizer.convert_tokens_to_string(origin_tokens[st:n])
+    #             origin_list.append(chunk)
+    #             break
+    #         else:
+    #             ed = st + max_len
+    #             for j in range(0, ed - st):
+    #                 if origin_tokens[ed - j] in tokenized_end_tokens:
+    #                     ed = ed - j
+    #                     break
+    #             chunk = self.tokenizer.convert_tokens_to_string(origin_tokens[st : ed + 1])
+    #             origin_list.append(chunk)
+    #             st = ed + 1
+    #     return origin_list
 
+    def chunk_narrativeqa(self, origin_text, chunk_end_tokens, chunk_size, min_chunk_size=None):
+        """
+        针对 NarrativeQA 类型文本的分层切分规则：
+        1. 先识别章节/场景边界 (Chapter, Scene, INT., EXT., 多空行)。
+        2. 每个场景块内部按 chunk_size 拆分：
+        - 优先在换行处切
+        - 其次在句子结束符切
+        - 最后硬切
+        3. 每个子块开头保留场景/章节标题。
+        4. 可选最小块长 min_chunk_size，小于该值时合并到前一块。
+        """
+        # === Step 1. 识别章节/场景 ===
+        tokenized_end_tokens = []
+        for t in chunk_end_tokens:
+            tokens = self.tokenizer.tokenize(t)
+            tokenized_end_tokens.extend(tokens)
+        scene_split_pattern = re.compile(r"(Chapter\s+\d+.*|Scene\s+\d+.*|INT\.|EXT\.)", re.IGNORECASE)
+        parts = scene_split_pattern.split(origin_text)
+
+        # 合并成 [(title, content)] 格式
+        scene_blocks = []
+        i = 0
+        while i < len(parts):
+            if scene_split_pattern.match(parts[i]):
+                title = parts[i].strip()
+                content = parts[i + 1] if i + 1 < len(parts) else ""
+                scene_blocks.append((title, content))
+                i += 2
+            else:
+                if parts[i].strip():
+                    scene_blocks.append(("", parts[i]))
+                i += 1
+
+        # === Step 2. 遍历每个场景块，进一步拆分 ===
+        all_chunks = []
+        for title, content in scene_blocks:
+            tokens = self.tokenizer.tokenize(content)
+            n = len(tokens)
+            st = 0
+
+            while st < n:
+                if st + chunk_size >= n:
+                    sub_tokens = tokens[st:n]
+                    st = n
+                else:
+                    ed = st + chunk_size
+                    split_found = False
+
+                    # 1) 优先在换行处分割
+                    for j in range(0, ed - st):
+                        if tokens[ed - j] == "\n":
+                            ed = ed - j
+                            split_found = True
+                            break
+
+                    # 2) 其次在句子结束符处分割
+                    if not split_found:
+                        for j in range(0, ed - st):
+                            if tokens[ed - j] in tokenized_end_tokens:
+                                ed = ed - j
+                                split_found = True
+                                break
+
+                    # 3) 兜底硬切
+                    if not split_found:
+                        ed = st + chunk_size
+
+                    sub_tokens = tokens[st : ed + 1]
+                    st = ed + 1
+
+                # === Step 3. 保留标题 ===
+                chunk_text = (title + "\n\n" if title else "") + self.tokenizer.convert_tokens_to_string(sub_tokens)
+
+                # === Step 4. min_chunk_size 合并逻辑 ===
+                if min_chunk_size and len(self.tokenizer.tokenize(chunk_text)) < min_chunk_size and all_chunks:
+                    all_chunks[-1] += "\n" + chunk_text
+                else:
+                    all_chunks.append(chunk_text)
+
+        return all_chunks
+
+    def compress(
+        self,
+        doc: str,
+        instruction: str,
+        query: str,
+        chunk_size: int,
+        rate: float = 0.0,
+        dataset: str = "",
+        chunk_method="bypunc",
+        selection_mode="topk",
+        result_path="",
+    ):
+        if chunk_method == "bypunc":
+            chunk_end_tokens = self.chunk_end_tokens
+            chunks = self._chunk_context(doc, chunk_end_tokens, chunk_size)
+        elif chunk_method == "narrativeqa":
+            chunks = self.chunk_narrativeqa(doc, self.chunk_end_tokens, chunk_size, min_chunk_size=16)
+        else:
+            tokenized_doc = self.tokenizer(doc, add_special_tokens=False)
+            doc_input_ids = tokenized_doc["input_ids"]
+
+            seq_len = len(doc_input_ids)
+            num_chunks = math.ceil(seq_len / chunk_size)
+
+            chunks = []
+            for i in range(num_chunks):
+                start = i * chunk_size
+                end = min((i + 1) * chunk_size, seq_len)
+                chunk_ids = doc_input_ids[start:end]
+                chunks.append(self.tokenizer.decode(chunk_ids))
+
+        # with open("output_newrule.txt", "w", encoding="utf-8") as f:
+        #     for s in chunks:
+        #         f.write(s + "\n\n\n\n")
+
+        batch_size = 32
+        scores = []
+
+        for i in range(0, len(chunks), batch_size):
+            batch_chunks = chunks[i : i + batch_size]
+
+            if self.engine == "hf":
+                batch_pairs = [self.format_instruction(instruction, query, chunk) for chunk in batch_chunks]
+                batch_inputs = self.process_inputs(batch_pairs)
+
+                with torch.no_grad():  # 确保不保存梯度
+                    batch_scores = self.compute_logits(batch_inputs)
+
+                scores.extend(batch_scores)
+
+            elif self.engine == "vllm":
+                queries = [
+                    self.query_template.format(prefix=self.prefix, instruction=instruction, query=query)
+                    for _ in range(len(batch_chunks))
+                ]
+                documents = [self.document_template.format(doc=doc, suffix=self.suffix) for doc in batch_chunks]
+
+                outputs = self.model.score(queries, documents)
+                batch_scores = [output.outputs.score for output in outputs]
+                scores.extend(batch_scores)
+
+        if selection_mode == "topk":
+            k = max(1, int(len(chunks) * rate))
+            topk_indices = sorted(sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)[:k])
+            selected_chunks = [chunks[i] for i in topk_indices]
+
+        elif selection_mode == "topp":
+            sorted_indices = sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)
+            sorted_scores = [scores[i] for i in sorted_indices]
+
+            total = sum(sorted_scores)
+            cumulative = 0.0
+            top_p_indices = []
+            for i, score in enumerate(sorted_scores):
+                cumulative += score
+                top_p_indices.append(sorted_indices[i])
+                if cumulative / total >= rate:  # 累积比例达到 top-p
+                    break
+
+            # 按原顺序返回 selected chunks
+            top_p_indices = sorted(top_p_indices)
+            selected_chunks = [chunks[i] for i in top_p_indices]
+            chunk_rate = len(selected_chunks) / len(chunks)
+            chunk_rate_str = f"{chunk_rate:.4f}"
+            csv_path = os.path.join(result_path, "rate.csv")
+            # 如果文件不存在，先创建并写入表头
+            if not os.path.exists(csv_path):
+                with open(csv_path, "w", newline="", encoding="utf-8") as f:
+                    writer = csv.writer(f)
+                    writer.writerow(["dataset", "chunk_rate"])  # 表头
+
+            # 追加写入 ratio
+            with open(csv_path, "a", newline="", encoding="utf-8") as f:
+                writer = csv.writer(f)
+                writer.writerow([dataset, chunk_rate_str])
+
+        elif selection_mode == "cluster":
+            scores_array = np.array(scores).reshape(-1, 1)
+
+            if len(scores) >= 2:
+                kmeans = KMeans(n_clusters=2, random_state=0).fit(scores_array)
+                labels = kmeans.labels_
+
+                # 按标签分组索引
+                class0_idx = [i for i, l in enumerate(labels) if l == 0]
+                class1_idx = [i for i, l in enumerate(labels) if l == 1]
+
+                # 计算两个簇的均值
+                mean0 = np.mean([scores[i] for i in class0_idx])
+                mean1 = np.mean([scores[i] for i in class1_idx])
+
+                # 选择高概率类
+                high_class_idx = class0_idx if mean0 > mean1 else class1_idx
+                selected_indices = high_class_idx
+                selected_chunks = [chunks[i] for i in selected_indices]
+
+                # 实际保留比例
+                chunk_rate = len(selected_chunks) / len(chunks)
+
+                # 若低于最小保留率 rate，则补充高分样本
+                if chunk_rate < rate:
+                    required_k = max(math.ceil(len(chunks) * rate), len(selected_chunks))
+                    # 从未被选中的块中按 score 排序补充
+                    remaining_indices = sorted(
+                        set(range(len(chunks))) - set(selected_indices),
+                        key=lambda i: scores[i],
+                        reverse=True,
+                    )
+                    additional = remaining_indices[: required_k - len(selected_indices)]
+                    selected_indices = sorted(selected_indices + additional)
+                    selected_chunks = [chunks[i] for i in selected_indices]
+                    chunk_rate = len(selected_chunks) / len(chunks)
+
+            else:
+                # 不足两块就全保留
+                selected_chunks = chunks[:]
+                mean0, mean1 = np.mean(scores), np.mean(scores)  # 没有聚类，用相同均值
+                chunk_rate = len(selected_chunks) / len(chunks)
+
+            means_sorted = sorted([mean0, mean1], reverse=True)
+            mean0_str, mean1_str = f"{means_sorted[0]:.4f}", f"{means_sorted[1]:.4f}"
+            chunk_rate_str = f"{chunk_rate:.4f}"
+            csv_path = os.path.join(result_path, "rate.csv")
+
+            # 若文件不存在则写表头
+            if not os.path.exists(csv_path):
+                with open(csv_path, "w", newline="", encoding="utf-8") as f:
+                    writer = csv.writer(f)
+                    writer.writerow(["dataset", "mean0", "mean1", "chunk_rate"])  # 表头
+
+            # 读取已有数据
+            rows = []
+            dataset_found = False
+
+            with open(csv_path, "r", newline="", encoding="utf-8") as f:
+                reader = csv.reader(f)
+                rows = list(reader)
+
+            # 检查是否已经存在该 dataset
+            for i, row in enumerate(rows):
+                if row[0] == dataset:
+                    # 找到该 dataset, 更新对应行的数据
+                    rows[i] = [dataset, mean0_str, mean1_str, chunk_rate_str]
+                    dataset_found = True
+                    break
+
+            # 如果没有找到该 dataset, 追加新行
+            if not dataset_found:
+                rows.append([dataset, mean0_str, mean1_str, chunk_rate_str])
+
+            # 将修改后的内容写回到文件
+            with open(csv_path, "w", newline="", encoding="utf-8") as f:
+                writer = csv.writer(f)
+                writer.writerows(rows)
+
+        elif selection_mode == "cluster-zscore":
+            # 手动指定簇数
+            scores_array = np.array(scores).reshape(-1, 1)
+            num_clusters = 2
+
+            if len(scores) >= num_clusters:
+                kmeans = KMeans(n_clusters=num_clusters, random_state=0).fit(scores_array)
+                labels = kmeans.labels_
+
+                # 按簇分组
+                cluster_indices = {i: [] for i in range(num_clusters)}
+                for idx, label in enumerate(labels):
+                    cluster_indices[label].append(idx)
+
+                # 计算每个簇的平均分
+                cluster_means = {i: np.mean([scores[j] for j in cluster_indices[i]]) for i in cluster_indices}
+
+                # 排序簇，选最高均值的 N-1 个簇
+                sorted_clusters = sorted(cluster_means.items(), key=lambda x: x[1], reverse=True)
+                high_clusters = [cid for cid, _ in sorted_clusters[: num_clusters - 1]]
+
+                # 第二高均值的簇
+                second_cluster_id = sorted_clusters[1][0]
+
+                # 检测第二簇的异常值（z-score > 2 可调整）
+                second_scores = np.array([scores[j] for j in cluster_indices[second_cluster_id]])
+                second_indices = cluster_indices[second_cluster_id]
+                z_scores = stats.zscore(second_scores)
+                outliers = [second_indices[i] for i, z in enumerate(z_scores) if z > 1]  # 显著异常值
+
+                # 选出高均值簇 + 第二簇异常值
+                selected_indices = sorted([i for cid in high_clusters for i in cluster_indices[cid]] + outliers)
+                selected_chunks = [chunks[i] for i in selected_indices]
+
+                # 实际保留比例
+                chunk_rate = len(selected_chunks) / len(chunks)
+
+                # 若低于最小保留率 rate，则补充高分样本
+                if chunk_rate < rate:
+                    required_k = max(math.ceil(len(chunks) * rate), len(selected_chunks))
+                    remaining_indices = sorted(
+                        set(range(len(chunks))) - set(selected_indices),
+                        key=lambda i: scores[i],
+                        reverse=True,
+                    )
+                    additional = remaining_indices[: required_k - len(selected_indices)]
+                    selected_indices = sorted(selected_indices + additional)
+                    selected_chunks = [chunks[i] for i in selected_indices]
+                    chunk_rate = len(selected_chunks) / len(chunks)
+
+            else:
+                # 不足 num_clusters 块就全保留
+                selected_chunks = chunks[:]
+                cluster_means = {0: np.mean(scores)}
+                chunk_rate = len(selected_chunks) / len(chunks)
+            # ==== 写入所有簇的均值（兼容 CSV） ====
+            # 计算所有簇的均值并格式化
+            means_sorted = sorted(cluster_means.values(), reverse=True)
+            mean_strs = [f"{m:.4f}" for m in means_sorted]
+
+            # 构造表头与行
+            chunk_rate_str = f"{chunk_rate:.4f}"
+            csv_path = os.path.join(result_path, "rate.csv")
+
+            # 若文件不存在则写表头
+            if not os.path.exists(csv_path):
+                header = ["dataset"] + [f"mean{i}" for i in range(len(mean_strs))] + ["chunk_rate"]
+                with open(csv_path, "w", newline="", encoding="utf-8") as f:
+                    writer = csv.writer(f)
+                    writer.writerow(header)
+
+            # 读取已有数据
+            rows = []
+            with open(csv_path, "r", newline="", encoding="utf-8") as f:
+                reader = csv.reader(f)
+                rows = list(reader)
+
+            # 找出已有表头，若当前簇数多于表头则扩展
+            header = rows[0]
+            expected_cols = 1 + len(mean_strs) + 1
+            if len(header) < expected_cols:
+                # 动态扩展 mean 列
+                for i in range(len(header) - 2, len(mean_strs)):
+                    header.insert(-1, f"mean{i}")
+                rows[0] = header
+
+            # 构造写入行
+            new_row = [dataset] + mean_strs + [chunk_rate_str]
+
+            # 检查是否已有该 dataset
+            dataset_found = False
+            for i, row in enumerate(rows[1:], start=1):
+                if row[0] == dataset:
+                    # 用新数据覆盖旧数据（自动对齐列）
+                    rows[i] = new_row + [""] * (len(header) - len(new_row))
+                    dataset_found = True
+                    break
+
+            # 没找到则追加新行
+            if not dataset_found:
+                new_row += [""] * (len(header) - len(new_row))
+                rows.append(new_row)
+
+            # 写回文件
+            with open(csv_path, "w", newline="", encoding="utf-8") as f:
+                writer = csv.writer(f)
+                writer.writerows(rows)
+
+        return scores, selected_chunks, chunks
+
+    def format_instruction(self, instruction, query, doc):
+        if instruction is None:
+            instruction = "Given a web search query, retrieve relevant passages that answer the query"
+        output = "<Instruct>: {instruction}\n<Query>: {query}\n<Document>: {doc}".format(
+            instruction=instruction, query=query, doc=doc
+        )
+        return output
+
+    def process_inputs(self, pairs):
+        inputs = self.tokenizer(
+            pairs,
+            padding=False,
+            truncation="longest_first",
+            return_attention_mask=False,
+            max_length=self.max_position_embeddings - len(self.prefix_tokens) - len(self.suffix_tokens),
+        )
+        for i, ele in enumerate(inputs["input_ids"]):
+            inputs["input_ids"][i] = self.prefix_tokens + ele + self.suffix_tokens
+        inputs = self.tokenizer.pad(
+            inputs,
+            padding=True,
+            return_tensors="pt",
+            max_length=self.max_position_embeddings,
+        )
+
+        for key in inputs:
+            inputs[key] = inputs[key].to(self.model.device)
+        return inputs
+
+    @torch.no_grad()
+    def compute_logits(self, inputs, **kwargs):
+        batch_scores = self.model(**inputs).logits[:, -1, :]
+        true_vector = batch_scores[:, self.token_true_id]
+        false_vector = batch_scores[:, self.token_false_id]
+        batch_scores = torch.stack([false_vector, true_vector], dim=1)
+        batch_scores = torch.nn.functional.log_softmax(batch_scores, dim=1)
+        scores = batch_scores[:, 1].exp().tolist()
+
+        return scores
+    
 class LongLLMLinguaTokenCompressor(BaseCompressor):
     def __init__(
         self,
@@ -879,9 +1369,10 @@ class LongLLMLinguaTokenCompressor(BaseCompressor):
                 raise ValueError("rate must be provided for token-level compression")
             compressed_text = self.iterative_token_compress(prefix, context, rate)
         return compressed_text
-
-
-class LLMLingua2PromptCompressor:
+    
+    
+    
+class PromptCompressor:
     """
     PromptCompressor is designed for compressing prompts based on a given language model.
 
@@ -923,10 +1414,13 @@ class LLMLingua2PromptCompressor:
         model_config: dict = {},
         open_api_config: dict = {},
         use_llmlingua2: bool = False,
+        use_slingua: bool = False,
         llmlingua2_config: dict = {},
+        quant: bool = False,
     ):
         self.model_name = model_name
         self.use_llmlingua2 = use_llmlingua2
+        self.use_slingua = use_slingua
         self.retrieval_model = None
         self.retrieval_model_name = None
         self.open_api_config = open_api_config
@@ -934,8 +1428,8 @@ class LLMLingua2PromptCompressor:
         self.prefix_bos_num = 100
         self.oai_tokenizer = tiktoken.encoding_for_model("gpt-3.5-turbo")
 
-        self.load_model(model_name, device_map, model_config)
-        if use_llmlingua2:
+        self.load_model(model_name, device_map, model_config, quant)
+        if use_llmlingua2 or use_slingua:  # slingua use llmlingua2 backend
             self.init_llmlingua2(**llmlingua2_config)
 
     def init_llmlingua2(
@@ -950,11 +1444,12 @@ class LLMLingua2PromptCompressor:
         self.special_tokens = set(
             [v for k, v in self.tokenizer.special_tokens_map.items() if k != "additional_special_tokens"]
         )
+
         self.added_tokens = [f"[NEW{i}]" for i in range(max_force_token)]
         self.tokenizer.add_special_tokens({"additional_special_tokens": self.added_tokens})
-        self.model.resize_token_embeddings(len(self.tokenizer))
+        # self.model.resize_token_embeddings(len(self.tokenizer))
 
-    def load_model(self, model_name: str, device_map: str = "cuda", model_config: dict = {}):
+    def load_model(self, model_name: str, device_map: str = "cuda", model_config: dict = {}, quant: bool = False):
         trust_remote_code = model_config.get("trust_remote_code", True)
         if "trust_remote_code" not in model_config:
             model_config["trust_remote_code"] = trust_remote_code
@@ -963,13 +1458,23 @@ class LLMLingua2PromptCompressor:
         if model_config.get("pad_to_left", True):
             tokenizer.padding_side = "left"
             tokenizer.pad_token_id = config.pad_token_id if config.pad_token_id else tokenizer.eos_token_id
-        MODEL_CLASS = (
-            AutoModelForTokenClassification
-            if any("ForTokenClassification" in ar for ar in config.architectures)
-            else AutoModelForCausalLM
-        )
+
+        if quant:
+            file_name = "model_quantized.onnx"
+            MODEL_CLASS = ORTModelForTokenClassification
+
+        else:
+            MODEL_CLASS = (
+                AutoModelForTokenClassification
+                if any("ForTokenClassification" in ar for ar in config.architectures)
+                else AutoModelForCausalLM
+            )
         self.device = device_map if any(key in device_map for key in ["cuda", "cpu", "mps"]) else "cuda"
-        if "cuda" in device_map or "cpu" in device_map:
+        if quant:
+            file_name = "model_quantized.onnx"
+            model = MODEL_CLASS.from_pretrained(model_name, file_name=file_name, provider="CUDAExecutionProvider")
+
+        elif "cuda" in device_map or "cpu" in device_map:
             model = MODEL_CLASS.from_pretrained(
                 model_name,
                 torch_dtype=model_config.pop("torch_dtype", "auto" if device_map == "cuda" else torch.float32),
@@ -1281,18 +1786,7 @@ class LLMLingua2PromptCompressor:
         force_tokens: List[str] = [],
         force_reserve_digit: bool = False,
         drop_consecutive: bool = False,
-        chunk_end_tokens=[
-            "。",
-            "！",
-            "？",
-            ".",
-            "!",
-            "?",
-            "\n",
-            "。\n",
-            "？\n",
-            "！\n",
-        ],
+        chunk_end_tokens: List[str] = [".", "\n"],
         strict_preserve_uncompressed: bool = True,
     ):
         """
@@ -1369,7 +1863,6 @@ class LLMLingua2PromptCompressor:
                 target_token=target_token,
                 use_context_level_filter=use_context_level_filter,
                 use_token_level_filter=use_token_level_filter,
-                use_sentence_level_filter=use_sentence_level_filter,
                 target_context=target_context,
                 context_level_rate=context_level_rate,
                 context_level_target_token=context_level_target_token,
@@ -1534,7 +2027,6 @@ class LLMLingua2PromptCompressor:
         target_token: int = -1,
         use_context_level_filter: bool = False,
         use_token_level_filter: bool = True,
-        use_sentence_level_filter: bool = False,
         target_context: int = -1,
         context_level_rate: float = 1.0,
         context_level_target_token: int = -1,
@@ -1613,13 +2105,7 @@ class LLMLingua2PromptCompressor:
             n_original_token += self.get_token_length(context[i], use_oai_tokenizer=True)
             for ori_token, new_token in token_map.items():
                 context[i] = context[i].replace(ori_token, new_token)
-            context_chunked.append(
-                self._chunk_context(
-                    context[i],
-                    chunk_end_tokens=chunk_end_tokens,
-                    chunk_size=self.max_seq_len,
-                )
-            )
+            context_chunked.append(self.__chunk_context(context[i], chunk_end_tokens=chunk_end_tokens))
 
         if use_context_level_filter:
             # want use_context_level_filter but do not specify any parameters in context level?
@@ -1678,11 +2164,6 @@ class LLMLingua2PromptCompressor:
                     force_reserve_digit=force_reserve_digit,
                     drop_consecutive=drop_consecutive,
                 )
-            if use_sentence_level_filter:
-                compressed_context, word_list, word_label_list = self.__compress_sentence_level(
-                    context_chunked,
-                    reduce_rate=0,
-                )
 
             n_compressed_token = 0
             for c in compressed_context:
@@ -1727,20 +2208,15 @@ class LLMLingua2PromptCompressor:
                 force_reserve_digit=force_reserve_digit,
                 drop_consecutive=drop_consecutive,
             )
-        # else:
-        #     compressed_context, word_list, word_label_list = self.__compress(
-        #         context_chunked,
-        #         reduce_rate=0,
-        #         token_to_word=token_to_word,
-        #         force_tokens=force_tokens,
-        #         token_map=token_map,
-        #         force_reserve_digit=force_reserve_digit,
-        #         drop_consecutive=drop_consecutive,
-        #     )
-        if use_sentence_level_filter:
-            compressed_context, word_list, word_label_list = self.__compress_sentence_level(
+        else:
+            compressed_context, word_list, word_label_list = self.__compress(
                 context_chunked,
-                reduce_rate=max(0, 1 - rate),
+                reduce_rate=0,
+                token_to_word=token_to_word,
+                force_tokens=force_tokens,
+                token_map=token_map,
+                force_reserve_digit=force_reserve_digit,
+                drop_consecutive=drop_consecutive,
             )
 
         n_compressed_token = 0
@@ -1990,10 +2466,7 @@ class LLMLingua2PromptCompressor:
         if reorder_context == "original":
             used = sorted(used)
         elif reorder_context == "two_stage":
-            l, r = (
-                [_ for idx, _ in enumerate(used) if idx % 2 == 0],
-                [_ for idx, _ in enumerate(used) if idx % 2 == 1],
-            )
+            l, r = [_ for idx, _ in enumerate(used) if idx % 2 == 0], [_ for idx, _ in enumerate(used) if idx % 2 == 1]
             used = l + r[::-1]
 
         if dynamic_context_compression_ratio > 0:
@@ -2008,7 +2481,7 @@ class LLMLingua2PromptCompressor:
 
         res = [context[idx] for idx in used if idx < len(context)]
         return res, dynamic_ratio, used
-
+    
     def control_sentence_budget(
         self,
         context: List[str],
@@ -2322,10 +2795,7 @@ class LLMLingua2PromptCompressor:
         while end <= compressed_input_ids.shape[1]:
             if end > self.max_position_embeddings and past_key_values is not None:
                 # KV-Cache Compression
-                e, s = (
-                    end - self.max_position_embeddings,
-                    min(self.cache_bos_num + start, self.max_position_embeddings),
-                )
+                e, s = end - self.max_position_embeddings, min(self.cache_bos_num + start, self.max_position_embeddings)
                 if pop_compressed_input_ids is None:
                     pop_compressed_input_ids = compressed_input_ids[:, :e]
                 else:
@@ -2891,18 +3361,9 @@ class LLMLingua2PromptCompressor:
         context_probs = [sum(probs) / len(probs) for probs in context_probs]
         return context_probs, context_words
 
-    def _chunk_context(self, origin_text, chunk_end_tokens, chunk_size):
-        """
-        把一段长文本 origin_text 按照最大长度 chunk_size 切分成多个chunk，每个 chunk 不会超过最大 token 长度，
-        同时尽量在指定的 chunk_end_tokens（比如句号、逗号之类的分隔符）处断开，此处从后往前便遍历
-        """
-
-        tokenized_end_tokens = []
-        for t in chunk_end_tokens:
-            tokens = self.tokenizer.tokenize(t)
-            tokenized_end_tokens.extend(tokens)
-
-        max_len = chunk_size
+    def __chunk_context(self, origin_text, chunk_end_tokens):
+        # leave 2 token for CLS and SEP
+        max_len = self.max_seq_len - 2
         origin_list = []
         origin_tokens = self.tokenizer.tokenize(origin_text)
         n = len(origin_tokens)
@@ -2915,38 +3376,13 @@ class LLMLingua2PromptCompressor:
             else:
                 ed = st + max_len
                 for j in range(0, ed - st):
-                    if origin_tokens[ed - j] in tokenized_end_tokens:
+                    if origin_tokens[ed - j] in chunk_end_tokens:
                         ed = ed - j
                         break
                 chunk = self.tokenizer.convert_tokens_to_string(origin_tokens[st : ed + 1])
                 origin_list.append(chunk)
                 st = ed + 1
         return origin_list
-
-    # def __chunk_context(self, origin_text, chunk_end_tokens):
-    #     # leave 2 token for CLS and SEP
-    #     max_len = self.max_seq_len - 2
-    #     origin_list = []
-    #     origin_tokens = self.tokenizer.tokenize(origin_text)
-    #     n = len(origin_tokens)
-    #     st = 0
-    #     while st < n:
-    #         if st + max_len > n - 1:
-    #             chunk = self.tokenizer.convert_tokens_to_string(origin_tokens[st:n])
-    #             origin_list.append(chunk)
-    #             break
-    #         else:
-    #             ed = st + max_len
-    #             for j in range(0, ed - st):
-    #                 if origin_tokens[ed - j] in chunk_end_tokens:
-    #                     ed = ed - j
-    #                     break
-    #             chunk = self.tokenizer.convert_tokens_to_string(
-    #                 origin_tokens[st : ed + 1]
-    #             )
-    #             origin_list.append(chunk)
-    #             st = ed + 1
-    #     return origin_list
 
     def __merge_token_to_word(self, tokens, token_probs, force_tokens, token_map, force_reserve_digit):
         words = []
@@ -3076,7 +3512,11 @@ class LLMLingua2PromptCompressor:
                     for word, word_prob in zip(words, word_probs):
                         num_token = len(self.oai_tokenizer.encode(word))
                         new_token_probs.extend([word_prob for _ in range(num_token)])
-                    threshold = np.percentile(new_token_probs, int(100 * reduce_rate + 1))
+
+                    if self.use_slingua:
+                        threshold = 0.5  # slingua use fixed threshold 0.5 for binary token classification
+                    else:
+                        threshold = np.percentile(new_token_probs, int(100 * reduce_rate + 1))
 
                     keep_words = []
                     word_labels = []
@@ -3119,111 +3559,4 @@ class LLMLingua2PromptCompressor:
             prev_idx = prev_idx + n_chunk
 
         return compressed_context_list, original_word_list, original_word_label_list
-
-    def __compress_sentence_level(
-        self,
-        context_list: list,
-        reduce_rate: float = 0.5,
-    ):
-        def sync_sentence(sentences, text):
-            seen_text = 0
-            sentence_num = len(sentences)
-            new_sentences = []
-            for i, s in enumerate(sentences):
-                assert s == text[seen_text : seen_text + len(s)]
-                if i == sentence_num - 1:
-                    new_sentences.append(text[seen_text:])
-                    break
-                next_sentence_start = text.find(sentences[i + 1][:5], seen_text + len(s))
-                new_sentences.append(text[seen_text:next_sentence_start])
-                seen_text = next_sentence_start
-            assert "".join(new_sentences) == text
-            return new_sentences
-
-        compressed_context_list = []
-        original_sentence_list = []
-        original_sentence_label_list = []
-
-        for chunk_group in context_list:  # 每个 context 由多个 chunk 组成
-            # 1. 合并 chunk -> 段落
-            paragraph = "".join(chunk_group)
-
-            # 2. 句子切分
-            # sentences = nltk.sent_tokenize(paragraph)
-            # sentences = sync_sentence(sentences, paragraph)
-
-            # nlp = spacy.load("zh_core_web_sm")
-            # doc = nlp(paragraph)
-            # sentences = [sent.text for sent in doc.sents]
-
-            # 处理\u0000
-            placeholder = "<<<NULL>>>"
-            text_placeholder = paragraph.replace("\u0000", placeholder)
-            # 2. 分句
-            sentences = blingfire.text_to_sentences(text_placeholder).split("\n")
-            # 3. 把占位符还原为 \u0000
-            sentences = [s.replace(placeholder, "\u0000") for s in sentences]
-            # sentences = blingfire.text_to_sentences(paragraph).split("\n")
-            sentences = sync_sentence(sentences, paragraph)
-
-            if len(sentences) == 0:
-                compressed_context_list.append(paragraph)
-                original_sentence_list.append([paragraph])
-                original_sentence_label_list.append([1])
-                continue
-
-            # 3. 对每个句子送入模型评分
-            sentence_probs = []
-            for sent in sentences:
-                dataset = TokenClfDataset([sent], tokenizer=self.tokenizer, max_len=self.max_seq_len)
-                dataloader = DataLoader(
-                    dataset,
-                    batch_size=self.max_batch_size,
-                    shuffle=False,
-                    drop_last=False,
-                )
-
-                with torch.no_grad():
-                    for batch in dataloader:
-                        ids = batch["ids"].to(self.device, dtype=torch.long)
-                        mask = batch["mask"].to(self.device, dtype=torch.long) == 1
-
-                        outputs = self.model(input_ids=ids, attention_mask=mask)
-                        logits = outputs.logits
-                        probs = F.softmax(logits, dim=-1)
-
-                        # probs shape: [B, seq_len, num_labels]
-                        # 取每句话对应 token 的正类概率，做平均
-                        for i in range(ids.size(0)):
-                            token_probs = probs[i, mask[i], 1].cpu().numpy()
-                            sentence_probs.append(float(np.mean(token_probs)))
-
-            # 4. 根据 reduce_rate 决定保留哪些句子
-            threshold = np.percentile(sentence_probs, int(100 * reduce_rate + 1))
-            keep_sentences = []
-            sentence_labels = []
-            for sent, prob in zip(sentences, sentence_probs):
-                if prob >= threshold:
-                    keep_sentences.append(sent)
-                    sentence_labels.append(1)
-                else:
-                    sentence_labels.append(0)
-
-            # 5. 拼接回压缩段落
-            if len(keep_sentences) == 0:
-                # 如果全被丢弃，可以默认保留最高概率一句
-                max_idx = np.argmax(sentence_probs)
-                keep_sentences = [sentences[max_idx]]
-                sentence_labels = [1 if i == max_idx else 0 for i in range(len(sentences))]
-
-            compressed_text = " ".join(keep_sentences)
-
-            compressed_context_list.append(compressed_text)
-            original_sentence_list.append(sentences)
-            original_sentence_label_list.append(sentence_labels)
-
-        return (
-            compressed_context_list,
-            original_sentence_list,
-            original_sentence_label_list,
-        )
+    

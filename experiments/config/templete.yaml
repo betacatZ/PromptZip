@@ -1,0 +1,33 @@
+dataset_dir: /data8/zhangdeming/cache/huggingface/datasets/zai-org/LongBench/data
+desc:  "tempelete"
+
+exp_config:
+  name: tempelete
+  batch_size: 32
+  max_total_token: 32768
+reranker_config:
+  model_type: rerank # rerank,null
+  model_name: Qwen/Qwen3-Reranker-0.6B
+  max_position_embeddings: 32768
+  chunk_size: [256]
+  rate: [0.3,0.4,0.5,0.6]
+  device_id: 0
+  engine: vllm
+  selection_mode: topk # topk, cluster
+
+compressor_config:
+  model_type: null # # longllmlingua,llmlingua2,llm, rerank, PPL, null
+  model_name: Qwen/Qwen3-0.6B
+  max_position_embeddings: 32768
+  chunk_size: 128
+  rate: 0.5
+  # threshold: [2000]
+  device_id: 0
+
+llm_config:
+  device_ids: 1
+  llm:
+    model_name: Qwen/Qwen2.5-7B-Instruct
+    tp: 1
+  sampling:
+    temperature: 0.0
