@@ -18,7 +18,8 @@ dependencies = [
     "flash-attn==2.7.4.post1",
     "blingfire==0.1.8",
     "onnxruntime-gpu==1.23.2",
-    "optimum==2.1.0"
+    "optimum==2.1.0",
+    "optimum-onnx[onnxruntime-gpu]",
 ]
 
 [tool.uv.extra-build-dependencies]

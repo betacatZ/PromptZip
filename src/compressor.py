@@ -730,8 +730,10 @@ class RerankCompressor(BaseCompressor):
 
         if selection_mode == "topk":
             k = max(1, int(len(chunks) * rate))
-            topk_indices = sorted(sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)[:k])
-            selected_chunks = [chunks[i] for i in topk_indices]
+            topk_indices = sorted(sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)[: k - 2])
+            selected_indices = topk_indices + [0, len(chunks) - 1]
+            selected_indices = sorted(set(selected_indices))
+            selected_chunks = [chunks[i] for i in selected_indices]
 
         elif selection_mode == "topp":
             sorted_indices = sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)
@@ -991,7 +993,8 @@ class RerankCompressor(BaseCompressor):
         scores = batch_scores[:, 1].exp().tolist()
 
         return scores
-    
+
+
 class LongLLMLinguaTokenCompressor(BaseCompressor):
     def __init__(
         self,
@@ -1369,9 +1372,8 @@ class LongLLMLinguaTokenCompressor(BaseCompressor):
                 raise ValueError("rate must be provided for token-level compression")
             compressed_text = self.iterative_token_compress(prefix, context, rate)
         return compressed_text
-    
-    
-    
+
+
 class PromptCompressor:
     """
     PromptCompressor is designed for compressing prompts based on a given language model.
@@ -2481,7 +2483,7 @@ class PromptCompressor:
 
         res = [context[idx] for idx in used if idx < len(context)]
         return res, dynamic_ratio, used
-    
+
     def control_sentence_budget(
         self,
         context: List[str],
@@ -3559,4 +3561,3 @@ class PromptCompressor:
             prev_idx = prev_idx + n_chunk
 
         return compressed_context_list, original_word_list, original_word_label_list
-    
