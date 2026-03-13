@@ -754,11 +754,11 @@ class RerankCompressor(BaseCompressor):
             n = len(chunks)
             k = max(1, int(n * rate))
             # 1/3 uniform
-            k_uni = 0.4 * k
+            k_uni = int(0.4 * k)
             # 2/3 importance
             k_imp = k - k_uni
             # -------- uniform sampling --------
-            uniform_indices = np.linspace(0, n - 1, k_uni, dtype=int).tolist()
+            uniform_indices = np.linspace(1, n - 2, k_uni, dtype=int).tolist()
             selected = set(uniform_indices)
             # -------- coverage importance --------
             remaining_indices = [i for i in range(n) if i not in selected]
