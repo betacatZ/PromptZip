@@ -1,5 +1,6 @@
 from typing import Callable, Optional
 
+from ray import logger
 import torch
 from transformers.cache_utils import Cache
 from transformers.modeling_utils import ALL_ATTENTION_FUNCTIONS
@@ -7,12 +8,11 @@ from transformers.models.qwen2.modeling_qwen2 import (
     Qwen2Attention,
     apply_rotary_pos_emb,
     eager_attention_forward,
-    logger,
 )
-
+from transformers.utils import logging
 from .util import compress_kv, vertical_slash_sparse_attention_forward
 
-
+logger = logging.get_logger(__name__)
 class Qwen2AttentionSpecKV(Qwen2Attention):
     def forward(
         self,
@@ -97,7 +97,7 @@ class Qwen2AttentionSpecKV(Qwen2Attention):
                 and self.layer_idx >= self.config.max_window_layers
             ):
                 # sliding_window = self.config.sliding_window
-                logger.warning_once(  # type: ignore
+                logger.warning(  # type: ignore
                     "Dynamic sparse attention is not compatible with sliding window."
                 )
 
@@ -106,7 +106,7 @@ class Qwen2AttentionSpecKV(Qwen2Attention):
                 if self.config._attn_implementation == "sdpa" and kwargs.get(
                     "output_attentions", False
                 ):
-                    logger.warning_once(  # type: ignore
+                    logger.warning(  # type: ignore
                         "`torch.nn.functional.scaled_dot_product_attention` does not support `output_attentions=True`. Falling back to "
                         'eager attention. This warning can be removed using the argument `attn_implementation="eager"` when loading the model.'
                     )

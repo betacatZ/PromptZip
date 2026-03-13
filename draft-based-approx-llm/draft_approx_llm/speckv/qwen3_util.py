@@ -1,5 +1,6 @@
 from typing import Callable, Optional
 
+from ray import logger
 import torch
 from transformers.cache_utils import Cache
 from transformers.modeling_utils import ALL_ATTENTION_FUNCTIONS
@@ -7,11 +8,12 @@ from transformers.models.qwen2.modeling_qwen2 import (
     Qwen2Attention,
     apply_rotary_pos_emb,
     eager_attention_forward,
-    logger,
 )
+from transformers.utils import logging
 
 from .util import compress_kv, vertical_slash_sparse_attention_forward
 
+logger = logging.get_logger(__name__)
 
 
 def update_qwen3_model_for_speckv(model):
@@ -43,10 +45,13 @@ def update_qwen3_model_for_speckv(model):
             if past_key_value is not None:
                 cache_kwargs = {"sin": sin, "cos": cos, "cache_position": cache_position}
 
-                if query_states.shape[2] > 1 and (self.config.max_capacity_prompt is None or (
-                    past_key_value.get_seq_length(self.layer_idx) == 0
-                    and query_states.shape[2] > self.config.max_capacity_prompt
-                )):
+                if query_states.shape[2] > 1 and (
+                    self.config.max_capacity_prompt is None
+                    or (
+                        past_key_value.get_seq_length(self.layer_idx) == 0
+                        and query_states.shape[2] > self.config.max_capacity_prompt
+                    )
+                ):
                     key_states_compress, value_states_compress, indices = compress_kv(
                         key_states,
                         query_states,
@@ -101,16 +106,14 @@ def update_qwen3_model_for_speckv(model):
                     and self.layer_idx >= self.config.max_window_layers
                 ):
                     # sliding_window = self.config.sliding_window
-                    logger.warning_once(  # type: ignore
+                    logger.warning(  # type: ignore
                         "Dynamic sparse attention is not compatible with sliding window."
                     )
 
                 attention_interface: Callable = eager_attention_forward
                 if self.config._attn_implementation != "eager":
-                    if self.config._attn_implementation == "sdpa" and kwargs.get(
-                        "output_attentions", False
-                    ):
-                        logger.warning_once(  # type: ignore
+                    if self.config._attn_implementation == "sdpa" and kwargs.get("output_attentions", False):
+                        logger.warning(  # type: ignore
                             "`torch.nn.functional.scaled_dot_product_attention` does not support `output_attentions=True`. Falling back to "
                             'eager attention. This warning can be removed using the argument `attn_implementation="eager"` when loading the model.'
                         )

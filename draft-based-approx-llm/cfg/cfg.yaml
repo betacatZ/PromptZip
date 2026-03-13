@@ -1,3 +1,6 @@
+name: test
+rate: 0.2
+
 draft_model:
   model_name_or_path: Qwen/Qwen2.5-0.5B-Instruct
   dtype: bfloat16
@@ -8,6 +11,7 @@ target_model:
   attn_implementation: flash_attention_2
 dataset:
   dataset_name: longbench
+  dataset_dir: /home/data/longbench
 sparse_config:
   sparse_type: specpc
   max_capacity_prompt: 1024
