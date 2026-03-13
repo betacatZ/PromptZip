@@ -730,9 +730,24 @@ class RerankCompressor(BaseCompressor):
 
         if selection_mode == "topk":
             k = max(1, int(len(chunks) * rate))
-            topk_indices = sorted(sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)[: k - 2])
-            selected_indices = topk_indices + [0, len(chunks) - 1]
-            selected_indices = sorted(set(selected_indices))
+            # topk_indices = sorted(sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)[: k - 2])
+            # selected_indices = topk_indices + [0, len(chunks) - 1]
+            # selected_indices = sorted(set(selected_indices))
+            # selected_chunks = [chunks[i] for i in selected_indices]
+            
+            n = len(chunks)
+            k = max(1, int(n * rate))
+            # 1/3 uniform
+            k_uni = k // 3
+            # 2/3 importance
+            k_imp = k - k_uni
+            # -------- uniform sampling --------
+            uniform_indices = np.linspace(0, n - 1, k_uni, dtype=int).tolist()
+            selected = set(uniform_indices)
+            # -------- importance sampling --------
+            remaining_indices = [i for i in range(n) if i not in selected]
+            topk_imp = sorted(sorted(remaining_indices, key=lambda i: scores[i], reverse=True)[:k_imp])
+            selected_indices = sorted(selected.union(topk_imp).union({0, n - 1}))
             selected_chunks = [chunks[i] for i in selected_indices]
 
         elif selection_mode == "topp":
