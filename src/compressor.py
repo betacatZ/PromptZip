@@ -763,12 +763,18 @@ class RerankCompressor(BaseCompressor):
             # -------- coverage importance --------
             remaining_indices = [i for i in range(n) if i not in selected]
             sorted_idx = sorted(remaining_indices, key=lambda i: scores[i], reverse=True)
-            candidates = sorted_idx[: max(k_imp * 3, k_imp)]
+            # -------- importance split --------
+            k_top = k_imp // 2
+            k_cov = k_imp - k_top
+            # 1️⃣ top-score selection
+            top_score_indices = sorted_idx[:k_top]
+            # 2️⃣ coverage selection
+            candidates = sorted_idx[: max(k_cov * 3, k_cov)]
             candidates = sorted(candidates)
-            stride = max(1, len(candidates) // k_imp)
-            topk_imp = candidates[::stride][:k_imp]
-            selected_indices = sorted(selected.union(topk_imp).union({0, n - 1}))
-            selected_chunks = [chunks[i] for i in selected_indices]
+            stride = max(1, len(candidates) // k_cov)
+            coverage_indices = candidates[::stride][:k_cov]
+            # merge
+            topk_imp = sorted(set(top_score_indices).union(coverage_indices))
 
         elif selection_mode == "topp":
             sorted_indices = sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)
