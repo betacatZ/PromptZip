@@ -12,7 +12,7 @@ import yaml
 from datasets import load_dataset
 from collections import defaultdict
 import numpy as np
-from draft_approx_llm import SpecPCConfig, patch_model
+from draft_approx_llm import DraftApproxLLMConfig, patch_model
 
 from dataset.longbench.metrics import (
     classification_score,
@@ -332,17 +332,7 @@ def build_components(yaml_args):
     draft_model = load_model(yaml_args["draft_model"], tokenizer)
     target_model = load_model(yaml_args["target_model"], tokenizer)
 
-    specpc_config = SpecPCConfig(
-        max_capacity_prompt=1024,
-        window_size=64,
-        pool_type="max",
-        kernel_size=64,
-        reduction_type="max",
-        lookahead_tokens=1,
-        neighbor_tokens=64,
-        starting_layer_index=8,
-        weighted_query=True,
-    )
+    specpc_config = DraftApproxLLMConfig.from_dict(yaml_args["sparse_config"])
     return tokenizer, target_model, draft_model, specpc_config
 
 
