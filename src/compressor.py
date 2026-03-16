@@ -694,7 +694,7 @@ class RerankCompressor(BaseCompressor):
                 scores.extend(batch_scores)
 
             elif self.engine == "vllm":
-                if instruction:
+                if instruction is None:
                     instruction = "Given a web search query, retrieve relevant passages that answer the query"
                 queries = [
                     self.query_template.format(prefix=self.prefix, instruction=instruction, query=query)
