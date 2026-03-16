@@ -288,7 +288,11 @@ dataset2prompt = {
 #     "lcc": "<|im_start|>system\nYou are a coding assistant. Complete the code below accurately. Only output the next line of code without explanation.\n<|im_end|>\n\n<|im_start|>user\n{context}\nNext line of code:\n<|im_end|>\n\n<|im_start|>assistant\n",
 #     "repobench-p": "<|im_start|>system\nYou are a coding assistant. Complete the code below accurately based on the context. Only output the next line of code without explanation.\n<|im_end|>\n\n<|im_start|>user\n{context}{input}\nNext line of code:\n<|im_end|>\n\n<|im_start|>assistant\n",
 # }
-
+QUERY = {
+    "gov_report": """Identify passages that contain key findings, policy conclusions, major facts, and important statistics that are essential for writing a comprehensive summary of a government report.""",
+    "multi_news": """Select passages that contain the most important events, key facts, main actors,and outcomes needed to write a comprehensive summary of multiple news articles.""",
+    "vcsum": """请找出会议记录中包含关键信息的段落，例如：会议讨论的主要议题、重要决策、关键观点和结论，这些信息将用于生成会议总结。""",
+}
 
 QUESTIONS = {
     "narrativeqa": "Now, answer the question based on the story asconcisely as you can, using a single phrase if possible. Do not provide any explanation.\n\nQuestion: {input}\n\nAnswer:",
@@ -599,6 +603,9 @@ async def predict(yaml_args, json_path, enable_test=False):
                     context = sample["context"]
                     compressed_context = context
                     if reranker is not None:
+                        if sample["dataset"] in ["gov_report", "multi_news", "vcsum"]:
+                            sample["input"] = QUERY[sample["dataset"]]
+
                         _, select_chunks, _ = reranker.compress(
                             context,
                             None,
