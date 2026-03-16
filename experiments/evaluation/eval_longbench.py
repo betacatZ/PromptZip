@@ -101,28 +101,193 @@ dataset2metric = {
 # }
 
 dataset2prompt = {
-    "narrativeqa": "<|im_start|>system\nYou are a helpful assistant. You are given a story, which can be either a novel or a movie script, and a question. Answer the question as concisely as you can, using a single phrase if possible. Do not provide any explanation.\n<|im_end|>\n\n<|im_start|>user\n<context>\n{context}\n</context>\n\nQuestion: {input}\n<|im_end|>\n\n<|im_start|>assistant\n",
-    "qasper": "<|im_start|>system\nYou are a scientific assistant. Answer the question based on the article. If the question cannot be answered, write 'unanswerable'. For yes/no questions, respond with 'yes', 'no', or 'unanswerable'. Do not provide any explanations.\n<|im_end|>\n\n<|im_start|>user\n<context>\n{context}\n</context>\n\nQuestion: {input}\n<|im_end|>\n\n<|im_start|>assistant\n",
-    "multifieldqa_en": "<|im_start|>system\nYou are a helpful assistant. Answer the question based on the given text. Only provide the answer and do not give any additional words.\n<|im_end|>\n\n<|im_start|>user\n<context>\n{context}\n</context>\n\nQuestion: {input}\n<|im_end|>\n\n<|im_start|>assistant\n",
-    "multifieldqa_zh": "<|im_start|>system\n你是一个中文问答助手。请根据文章简洁地回答问题，只提供答案，不要额外解释。\n<|im_end|>\n\n<|im_start|>user\n<context>\n{context}\n</context>\n\n问题：{input}\n<|im_end|>\n\n<|im_start|>assistant\n",
-    "hotpotqa": "<|im_start|>system\nYou are a helpful assistant. Answer the question based on the given passages. Only give me the answer and do not output any other words.\n<|im_end|>\n\n<|im_start|>user\nThe following are the given passages:\n<context>\n{context}\n</context>\n\nAnswer the question based on the given passages. Only give me the answer and do not output any other words.\n\nQuestion: {input}\n<|im_end|>\n\n<|im_start|>assistant\n",
-    "2wikimqa": "<|im_start|>system\nYou are a helpful assistant. Answer the question based on the given passages. Only give me the answer and do not output any other words.\n<|im_end|>\n\n<|im_start|>user\nThe following are the given passages:\n<context>\n{context}\n</context>\n\nAnswer the question based on the given passages. Only give me the answer and do not output any other words.\n\nQuestion: {input}\n<|im_end|>\n\n<|im_start|>assistant\n",
-    "musique": "<|im_start|>system\nYou are a helpful assistant. Answer the question based on the given passages. Only give me the answer and do not output any other words..\n<|im_end|>\n\n<|im_start|>user\nThe following are the given passages:\n<context>\n{context}\n</context>\n\nAnswer the question based on the given passages. Only give me the answer and do not output any other words.\n\nQuestion: {input}\n<|im_end|>\n\n<|im_start|>assistant\n",
-    "dureader": "<|im_start|>system\n你是一个中文问答助手。请根据给定文章回答问题。只给出答案，不要解释。\n<|im_end|>\n\n<|im_start|>user\n<context>\n{context}\n</context>\n\n问题：{input}\n<|im_end|>\n\n<|im_start|>assistant\n",
-    "gov_report": "<|im_start|>system\nYou are a helpful assistant. You are given a report by a government agency. Write a one-page summary of the report.\n<|im_end|>\n\n<|im_start|>user\n<context>\n{context}\n</context>\n\nSummary:\n<|im_end|>\n\n<|im_start|>assistant\n",
-    "qmsum": "<|im_start|>system\nYou are a helpful assistant. Answer the query based on the meeting transcript in one or more sentences.\n<|im_end|>\n\n<|im_start|>user\n<context>\n{context}\n</context>\n\nQuery: {input}\n<|im_end|>\n\n<|im_start|>assistant\n",
-    "multi_news": "<|im_start|>system\nYou are a helpful assistant. Read the news passages and write a one-page summary. Do not provide additional explanations.\n<|im_end|>\n\n<|im_start|>user\n<context>\n{context}\n</context>\n\nPlease provide the summary below.\n<|im_end|>\n\n<|im_start|>assistant\n",
-    "vcsum": "<|im_start|>system\n你是会议总结助手。请根据会议记录写一段总结，不要解释。\n<|im_end|>\n\n<|im_start|>user\n<context>\n{context}\n</context>\n\n会议总结：\n<|im_end|>\n\n<|im_start|>assistant\n",
-    "trec": "<|im_start|>system\nYou are a classification assistant. Determine the type of the question based on the given examples. Only output the type/category.\n<|im_end|>\n\n<|im_start|>user\n<context>\n{context}\n</context>\n\nQuestion: {input}\n<|im_end|>\n\n<|im_start|>assistant\n",
-    "triviaqa": "<|im_start|>system\nYou are a helpful assistant. Answer the question based on the given passage. Only give the answer and do not output any other words.\n<|im_end|>\n\n<|im_start|>user\n{context}\n\n{input}\n<|im_end|>\n\n<|im_start|>assistant\n",
-    "samsum": "<|im_start|>system\nYou are a helpful assistant. Summarize the dialogue into a few short sentences. Do not provide explanations or extra words.\n<|im_end|>\n\n<|im_start|>user\n{context}\n\n{input}\n<|im_end|>\n\n<|im_start|>assistant\n",
-    "lsht": "<|im_start|>system\n你是中文分类助手。根据给定的新闻内容，判断新闻的类别。只输出类别名称。\n<|im_end|>\n\n<|im_start|>user\n{context}\n\n{input}\n<|im_end|>\n\n<|im_start|>assistant\n",
-    "passage_count": "<|im_start|>system\nYou are a helpful assistant. Count how many unique paragraphs there are in the given set of paragraphs after removing duplicates. Only output the number.\n<|im_end|>\n\n<|im_start|>user\n{context}\n<|im_end|>\n\n<|im_start|>assistant\n",
-    "passage_retrieval_en": "<|im_start|>system\nYou are a helpful assistant. Determine which paragraph the abstract belongs to. Only output the number of the paragraph. The answer format must be like 'Paragraph 1', 'Paragraph 2', etc.\n<|im_end|>\n\n<|im_start|>user\nHere are 30 paragraphs from Wikipedia, along with an abstract. Please determine which paragraph the abstract is from.\n\n{context}\n\nThe following is an abstract.\n\n{input}\n\nPlease enter the number of the paragraph that the abstract is from. The answer format must be like 'Paragraph 1', 'Paragraph 2', etc.\n\nThe answer is: \n<|im_end|>\n\n<|im_start|>assistant\n",
-    "passage_retrieval_zh": "<|im_start|>system\n你是中文阅读助手。请根据摘要判断该段落属于哪个段落，答案格式为“段落1”、“段落2”\n<|im_end|>\n\n<|im_start|>user\n{context}\n\n下面是一个摘要:\n{input}\n<|im_end|>\n\n<|im_start|>assistant\n",
-    "lcc": "<|im_start|>system\nYou are a coding assistant. Complete the code below accurately. Only output the next line of code without explanation.\n<|im_end|>\n\n<|im_start|>user\n{context}\nNext line of code:\n<|im_end|>\n\n<|im_start|>assistant\n",
-    "repobench-p": "<|im_start|>system\nYou are a coding assistant. Complete the code below accurately based on the context. Only output the next line of code without explanation.\n<|im_end|>\n\n<|im_start|>user\n{context}{input}\nNext line of code:\n<|im_end|>\n\n<|im_start|>assistant\n",
+    "narrativeqa": [
+        {
+            "role": "system",
+            "content": "You are a helpful assistant. You are given a story, which can be either a novel or a movie script, and a question. Answer the question as concisely as you can, using a single phrase if possible. Do not provide any explanation.",
+        },
+        {"role": "user", "content": "{context}\n\nQuestion: {input}"},
+    ],
+    "qasper": [
+        {
+            "role": "system",
+            "content": 'You are a scientific assistant. Answer the question based on the article. If the question cannot be answered, write "unanswerable". For yes/no questions, respond with "yes", "no", or "unanswerable". Do not provide any explanations.',
+        },
+        {"role": "user", "content": "{context}\n\nQuestion: {input}"},
+    ],
+    "multifieldqa_en": [
+        {
+            "role": "system",
+            "content": "You are a helpful assistant. Answer the question based on the given text. Only provide the answer and do not give any additional words.",
+        },
+        {"role": "user", "content": "{context}\n\nQuestion: {input}"},
+    ],
+    "multifieldqa_zh": [
+        {
+            "role": "system",
+            "content": "你是一个中文问答助手。请根据文章简洁地回答问题，只提供答案，不要额外解释。",
+        },
+        {"role": "user", "content": "{context}\n\n问题：{input}"},
+    ],
+    "hotpotqa": [
+        {
+            "role": "system",
+            "content": "You are a helpful assistant. Answer the question based on the given passages. Only give me the answer and do not output any other words.",
+        },
+        {
+            "role": "user",
+            "content": "The following are the given passages:\n{context}\n\nAnswer the question based on the given passages. Only give me the answer and do not output any other words.\n\nQuestion: {input}",
+        },
+    ],
+    "2wikimqa": [
+        {
+            "role": "system",
+            "content": "You are a helpful assistant. Answer the question based on the given passages. Only give me the answer and do not output any other words.",
+        },
+        {
+            "role": "user",
+            "content": "The following are the given passages:\n{context}\n\nAnswer the question based on the given passages. Only give me the answer and do not output any other words.\n\nQuestion: {input}",
+        },
+    ],
+    "musique": [
+        {
+            "role": "system",
+            "content": "You are a helpful assistant. Answer the question based on the given passages. Only give me the answer and do not output any other words..",
+        },
+        {
+            "role": "user",
+            "content": "The following are the given passages:\n{context}\n\nAnswer the question based on the given passages. Only give me the answer and do not output any other words.\n\nQuestion: {input}",
+        },
+    ],
+    "dureader": [
+        {
+            "role": "system",
+            "content": "你是一个中文问答助手。请根据给定文章回答问题。只给出答案，不要解释。",
+        },
+        {"role": "user", "content": "{context}\n\n问题：{input}"},
+    ],
+    "gov_report": [
+        {
+            "role": "system",
+            "content": "You are a helpful assistant. You are given a report by a government agency. Write a one-page summary of the report.",
+        },
+        {"role": "user", "content": "{context}\n\nSummary:"},
+    ],
+    "qmsum": [
+        {
+            "role": "system",
+            "content": "You are a helpful assistant. Answer the query based on the meeting transcript in one or more sentences.",
+        },
+        {"role": "user", "content": "{context}\n\nQuery: {input}"},
+    ],
+    "multi_news": [
+        {
+            "role": "system",
+            "content": "You are a helpful assistant. Read the news passages and write a one-page summary. Do not provide additional explanations.",
+        },
+        {"role": "user", "content": "{context}\n\nPlease provide the summary below."},
+    ],
+    "vcsum": [
+        {
+            "role": "system",
+            "content": "你是会议总结助手。请根据会议记录写一段总结，不要解释。",
+        },
+        {"role": "user", "content": "{context}\n\n会议总结："},
+    ],
+    "trec": [
+        {
+            "role": "system",
+            "content": "You are a classification assistant. Determine the type of the question based on the given examples. Only output the type/category.",
+        },
+        {"role": "user", "content": "{context}\n\nQuestion: {input}"},
+    ],
+    "triviaqa": [
+        {
+            "role": "system",
+            "content": "You are a helpful assistant. Answer the question based on the given passage. Only give the answer and do not output any other words.",
+        },
+        {"role": "user", "content": "{context}\n\n{input}"},
+    ],
+    "samsum": [
+        {
+            "role": "system",
+            "content": "You are a helpful assistant. Summarize the dialogue into a few short sentences. Do not provide explanations or extra words.",
+        },
+        {"role": "user", "content": "{context}\n\n{input}"},
+    ],
+    "lsht": [
+        {
+            "role": "system",
+            "content": "你是中文分类助手。根据给定的新闻内容，判断新闻的类别。只输出类别名称。",
+        },
+        {"role": "user", "content": "{context}\n\n{input}"},
+    ],
+    "passage_count": [
+        {
+            "role": "system",
+            "content": "You are a helpful assistant. Count how many unique paragraphs there are in the given set of paragraphs after removing duplicates. Only output the number.",
+        },
+        {"role": "user", "content": "{context}"},
+    ],
+    "passage_retrieval_en": [
+        {
+            "role": "system",
+            "content": "You are a helpful assistant. Determine which paragraph the abstract belongs to. Only output the number of the paragraph. The answer format must be like 'Paragraph 1', 'Paragraph 2', etc.",
+        },
+        {
+            "role": "user",
+            "content": "Here are 30 paragraphs from Wikipedia, along with an abstract. Please determine which paragraph the abstract is from.\n\n{context}\n\nThe following is an abstract.\n\n{input}\n\nPlease enter the number of the paragraph that the abstract is from. The answer format must be like 'Paragraph 1', 'Paragraph 2', etc.\n\nThe answer is: ",
+        },
+    ],
+    "passage_retrieval_zh": [
+        {
+            "role": "system",
+            "content": "你是中文阅读助手。请根据摘要判断该段落属于哪个段落，答案格式为“段落1”、“段落2”",
+        },
+        {
+            "role": "user",
+            "content": "{context}\n\n下面是一个摘要:\n{input}\n\n请输入摘要所属段落的编号。答案格式必须是“段落1”、“段落2”等格式\n\n答案是：",
+        },
+    ],
+    "lcc": [
+        {
+            "role": "system",
+            "content": "You are a coding assistant. Complete the code below accurately. Only output the next line of code without explanation.",
+        },
+        {"role": "user", "content": "{context}\nNext line of code:\n"},
+    ],
+    "repobench-p": [
+        {
+            "role": "system",
+            "content": "You are a coding assistant. Complete the code below accurately based on the context. Only output the next line of code without explanation.",
+        },
+        {"role": "user", "content": "{context}{input}\nNext line of code:\n"},
+    ],
 }
+
+# dataset2prompt = {
+#     "narrativeqa": "<|im_start|>system\nYou are a helpful assistant. You are given a story, which can be either a novel or a movie script, and a question. Answer the question as concisely as you can, using a single phrase if possible. Do not provide any explanation.\n<|im_end|>\n\n<|im_start|>user\n<context>\n{context}\n</context>\n\nQuestion: {input}\n<|im_end|>\n\n<|im_start|>assistant\n",
+#     "qasper": "<|im_start|>system\nYou are a scientific assistant. Answer the question based on the article. If the question cannot be answered, write 'unanswerable'. For yes/no questions, respond with 'yes', 'no', or 'unanswerable'. Do not provide any explanations.\n<|im_end|>\n\n<|im_start|>user\n<context>\n{context}\n</context>\n\nQuestion: {input}\n<|im_end|>\n\n<|im_start|>assistant\n",
+#     "multifieldqa_en": "<|im_start|>system\nYou are a helpful assistant. Answer the question based on the given text. Only provide the answer and do not give any additional words.\n<|im_end|>\n\n<|im_start|>user\n<context>\n{context}\n</context>\n\nQuestion: {input}\n<|im_end|>\n\n<|im_start|>assistant\n",
+#     "multifieldqa_zh": "<|im_start|>system\n你是一个中文问答助手。请根据文章简洁地回答问题，只提供答案，不要额外解释。\n<|im_end|>\n\n<|im_start|>user\n<context>\n{context}\n</context>\n\n问题：{input}\n<|im_end|>\n\n<|im_start|>assistant\n",
+#     "hotpotqa": "<|im_start|>system\nYou are a helpful assistant. Answer the question based on the given passages. Only give me the answer and do not output any other words.\n<|im_end|>\n\n<|im_start|>user\nThe following are the given passages:\n<context>\n{context}\n</context>\n\nAnswer the question based on the given passages. Only give me the answer and do not output any other words.\n\nQuestion: {input}\n<|im_end|>\n\n<|im_start|>assistant\n",
+#     "2wikimqa": "<|im_start|>system\nYou are a helpful assistant. Answer the question based on the given passages. Only give me the answer and do not output any other words.\n<|im_end|>\n\n<|im_start|>user\nThe following are the given passages:\n<context>\n{context}\n</context>\n\nAnswer the question based on the given passages. Only give me the answer and do not output any other words.\n\nQuestion: {input}\n<|im_end|>\n\n<|im_start|>assistant\n",
+#     "musique": "<|im_start|>system\nYou are a helpful assistant. Answer the question based on the given passages. Only give me the answer and do not output any other words..\n<|im_end|>\n\n<|im_start|>user\nThe following are the given passages:\n<context>\n{context}\n</context>\n\nAnswer the question based on the given passages. Only give me the answer and do not output any other words.\n\nQuestion: {input}\n<|im_end|>\n\n<|im_start|>assistant\n",
+#     "dureader": "<|im_start|>system\n你是一个中文问答助手。请根据给定文章回答问题。只给出答案，不要解释。\n<|im_end|>\n\n<|im_start|>user\n<context>\n{context}\n</context>\n\n问题：{input}\n<|im_end|>\n\n<|im_start|>assistant\n",
+#     "gov_report": "<|im_start|>system\nYou are a helpful assistant. You are given a report by a government agency. Write a one-page summary of the report.\n<|im_end|>\n\n<|im_start|>user\n<context>\n{context}\n</context>\n\nSummary:\n<|im_end|>\n\n<|im_start|>assistant\n",
+#     "qmsum": "<|im_start|>system\nYou are a helpful assistant. Answer the query based on the meeting transcript in one or more sentences.\n<|im_end|>\n\n<|im_start|>user\n<context>\n{context}\n</context>\n\nQuery: {input}\n<|im_end|>\n\n<|im_start|>assistant\n",
+#     "multi_news": "<|im_start|>system\nYou are a helpful assistant. Read the news passages and write a one-page summary. Do not provide additional explanations.\n<|im_end|>\n\n<|im_start|>user\n<context>\n{context}\n</context>\n\nPlease provide the summary below.\n<|im_end|>\n\n<|im_start|>assistant\n",
+#     "vcsum": "<|im_start|>system\n你是会议总结助手。请根据会议记录写一段总结，不要解释。\n<|im_end|>\n\n<|im_start|>user\n<context>\n{context}\n</context>\n\n会议总结：\n<|im_end|>\n\n<|im_start|>assistant\n",
+#     "trec": "<|im_start|>system\nYou are a classification assistant. Determine the type of the question based on the given examples. Only output the type/category.\n<|im_end|>\n\n<|im_start|>user\n<context>\n{context}\n</context>\n\nQuestion: {input}\n<|im_end|>\n\n<|im_start|>assistant\n",
+#     "triviaqa": "<|im_start|>system\nYou are a helpful assistant. Answer the question based on the given passage. Only give the answer and do not output any other words.\n<|im_end|>\n\n<|im_start|>user\n{context}\n\n{input}\n<|im_end|>\n\n<|im_start|>assistant\n",
+#     "samsum": "<|im_start|>system\nYou are a helpful assistant. Summarize the dialogue into a few short sentences. Do not provide explanations or extra words.\n<|im_end|>\n\n<|im_start|>user\n{context}\n\n{input}\n<|im_end|>\n\n<|im_start|>assistant\n",
+#     "lsht": "<|im_start|>system\n你是中文分类助手。根据给定的新闻内容，判断新闻的类别。只输出类别名称。\n<|im_end|>\n\n<|im_start|>user\n{context}\n\n{input}\n<|im_end|>\n\n<|im_start|>assistant\n",
+#     "passage_count": "<|im_start|>system\nYou are a helpful assistant. Count how many unique paragraphs there are in the given set of paragraphs after removing duplicates. Only output the number.\n<|im_end|>\n\n<|im_start|>user\n{context}\n<|im_end|>\n\n<|im_start|>assistant\n",
+#     "passage_retrieval_en": "<|im_start|>system\nYou are a helpful assistant. Determine which paragraph the abstract belongs to. Only output the number of the paragraph. The answer format must be like 'Paragraph 1', 'Paragraph 2', etc.\n<|im_end|>\n\n<|im_start|>user\nHere are 30 paragraphs from Wikipedia, along with an abstract. Please determine which paragraph the abstract is from.\n\n{context}\n\nThe following is an abstract.\n\n{input}\n\nPlease enter the number of the paragraph that the abstract is from. The answer format must be like 'Paragraph 1', 'Paragraph 2', etc.\n\nThe answer is: \n<|im_end|>\n\n<|im_start|>assistant\n",
+#     "passage_retrieval_zh": "<|im_start|>system\n你是中文阅读助手。请根据摘要判断该段落属于哪个段落，答案格式为“段落1”、“段落2”\n<|im_end|>\n\n<|im_start|>user\n{context}\n\n下面是一个摘要:\n{input}\n<|im_end|>\n\n<|im_start|>assistant\n",
+#     "lcc": "<|im_start|>system\nYou are a coding assistant. Complete the code below accurately. Only output the next line of code without explanation.\n<|im_end|>\n\n<|im_start|>user\n{context}\nNext line of code:\n<|im_end|>\n\n<|im_start|>assistant\n",
+#     "repobench-p": "<|im_start|>system\nYou are a coding assistant. Complete the code below accurately based on the context. Only output the next line of code without explanation.\n<|im_end|>\n\n<|im_start|>user\n{context}{input}\nNext line of code:\n<|im_end|>\n\n<|im_start|>assistant\n",
+# }
 
 
 QUESTIONS = {
@@ -427,7 +592,7 @@ async def predict(yaml_args, json_path, enable_test=False):
 
             batch_prompt = []
             for sample in filtered_batch:
-                prompt_format = dataset2prompt[sample["dataset"]]
+                # prompt_format = dataset2prompt[sample["dataset"]]
                 max_gen = int(dataset2maxlen[sample["dataset"]])
 
                 def run_compress():
@@ -436,7 +601,7 @@ async def predict(yaml_args, json_path, enable_test=False):
                     if reranker is not None:
                         _, select_chunks, _ = reranker.compress(
                             context,
-                            prompt_format,
+                            None,
                             sample["input"],
                             run_config["reranker_config"]["chunk_size"],
                             run_config["reranker_config"]["rate"],
@@ -526,17 +691,25 @@ async def predict(yaml_args, json_path, enable_test=False):
                 #     msg["content"] = msg["content"].format(context=result, input=sample["input"])
                 # prompt = tokenizer.apply_chat_template(prompt_templete, tokenize=False, add_generation_prompt=True)
 
-                prompt = prompt_format.format(
-                    context=result,
-                    input=sample["input"],
+                messages = dataset2prompt[sample["dataset"]]
+                messages[1]["content"] = messages[1]["content"].format(context=result, input=sample["input"])
+                prompt = tokenizer.apply_chat_template(
+                    messages,
+                    tokenize=False,
+                    add_generation_prompt=True,
                 )
-                token_ids = tokenizer(prompt, padding=False, return_attention_mask=False)["input_ids"]
 
-                if len(token_ids) > (yaml_args["exp_config"]["max_total_token"] - max_gen):
-                    half = int((yaml_args["exp_config"]["max_total_token"] - max_gen) / 2) - 1
-                    prompt = tokenizer.decode(token_ids[:half]) + tokenizer.decode(token_ids[-half:])
+                # prompt = prompt_format.format(
+                #     context=result,
+                #     input=sample["input"],
+                # )
+                model_inputs = tokenizer(prompt, return_tensors="pt")
 
-                batch_prompt.append(prompt)
+                # if len(token_ids) > (yaml_args["exp_config"]["max_total_token"] - max_gen):
+                #     half = int((yaml_args["exp_config"]["max_total_token"] - max_gen) / 2) - 1
+                #     prompt = tokenizer.decode(token_ids[:half]) + tokenizer.decode(token_ids[-half:])
+
+                batch_prompt.append(model_inputs)
 
             await queue.put((i, filtered_batch, batch_prompt))
         await queue.put(None)

@@ -559,33 +559,6 @@ class RerankCompressor(BaseCompressor):
 
         return origin_list
 
-    # def _chunk_context(self, origin_text, chunk_end_tokens, chunk_size):
-    #     """把一段长文本 origin_text 按照最大长度 chunk_size 切分成多个chunk，每个 chunk 不会超过最大 token 长度， 同时尽量在指定的 chunk_end_tokens（比如句号、逗号之类的分隔符）处断开，此处从后往前便遍历"""
-    #     tokenized_end_tokens = []
-    #     for t in chunk_end_tokens:
-    #         tokens = self.tokenizer.tokenize(t)
-    #         tokenized_end_tokens.extend(tokens)
-    #     max_len = chunk_size
-    #     origin_list = []
-    #     origin_tokens = self.tokenizer.tokenize(origin_text)
-    #     n = len(origin_tokens)
-    #     st = 0
-    #     while st < n:
-    #         if st + max_len > n - 1:
-    #             chunk = self.tokenizer.convert_tokens_to_string(origin_tokens[st:n])
-    #             origin_list.append(chunk)
-    #             break
-    #         else:
-    #             ed = st + max_len
-    #             for j in range(0, ed - st):
-    #                 if origin_tokens[ed - j] in tokenized_end_tokens:
-    #                     ed = ed - j
-    #                     break
-    #             chunk = self.tokenizer.convert_tokens_to_string(origin_tokens[st : ed + 1])
-    #             origin_list.append(chunk)
-    #             st = ed + 1
-    #     return origin_list
-
     def chunk_narrativeqa(self, origin_text, chunk_end_tokens, chunk_size, min_chunk_size=None):
         """
         针对 NarrativeQA 类型文本的分层切分规则：
@@ -718,6 +691,8 @@ class RerankCompressor(BaseCompressor):
                 scores.extend(batch_scores)
 
             elif self.engine == "vllm":
+                if instruction:
+                    instruction = "Given a web search query, retrieve relevant passages that answer the query"
                 queries = [
                     self.query_template.format(prefix=self.prefix, instruction=instruction, query=query)
                     for _ in range(len(batch_chunks))
@@ -777,9 +752,6 @@ class RerankCompressor(BaseCompressor):
             topk_imp = sorted(set(top_score_indices).union(coverage_indices))
             selected_indices = sorted(selected.union(topk_imp).union({0, n - 1}))
             selected_chunks = [chunks[i] for i in selected_indices]
-            
-            
-            
 
         elif selection_mode == "topp":
             sorted_indices = sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)
