@@ -6,7 +6,7 @@ import os
 import urllib3
 import warnings
 import csv
-
+import copy
 import yaml
 import asyncio
 import torch
@@ -691,7 +691,8 @@ async def predict(yaml_args, json_path, enable_test=False):
                 #     msg["content"] = msg["content"].format(context=result, input=sample["input"])
                 # prompt = tokenizer.apply_chat_template(prompt_templete, tokenize=False, add_generation_prompt=True)
 
-                messages = dataset2prompt[sample["dataset"]]
+                messages = copy.deepcopy(dataset2prompt[sample["dataset"]])
+
                 if sample["dataset"] in ["gov_report", "multi_news", "vcsum"]:
                     messages[1]["content"] = messages[1]["content"].format(context=result)
                 else:
