@@ -703,13 +703,13 @@ async def predict(yaml_args, json_path, enable_test=False):
                 #     context=result,
                 #     input=sample["input"],
                 # )
-                model_inputs = tokenizer(prompt, return_tensors="pt")
+                # model_inputs = tokenizer(prompt, return_tensors="pt")
 
                 # if len(token_ids) > (yaml_args["exp_config"]["max_total_token"] - max_gen):
                 #     half = int((yaml_args["exp_config"]["max_total_token"] - max_gen) / 2) - 1
                 #     prompt = tokenizer.decode(token_ids[:half]) + tokenizer.decode(token_ids[-half:])
 
-                batch_prompt.append(model_inputs)
+                batch_prompt.append(prompt)
 
             await queue.put((i, filtered_batch, batch_prompt))
         await queue.put(None)
