@@ -652,6 +652,9 @@ class RerankCompressor(BaseCompressor):
         selection_mode="topk",
         result_path="",
     ):
+        if query == "":
+            query = "Summarize the document"
+        
         if chunk_method == "bypunc":
             chunk_end_tokens = self.chunk_end_tokens
             chunks = self._chunk_context(doc, chunk_end_tokens, chunk_size)
