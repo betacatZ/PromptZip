@@ -692,7 +692,10 @@ async def predict(yaml_args, json_path, enable_test=False):
                 # prompt = tokenizer.apply_chat_template(prompt_templete, tokenize=False, add_generation_prompt=True)
 
                 messages = dataset2prompt[sample["dataset"]]
-                messages[1]["content"] = messages[1]["content"].format(context=result, input=sample["input"])
+                if sample["dataset"] in ["gov_report", "multi_news", "vcsum"]:
+                    messages[1]["content"] = messages[1]["content"].format(context=result)
+                else:
+                    messages[1]["content"] = messages[1]["content"].format(context=result, input=sample["input"])
                 prompt = tokenizer.apply_chat_template(
                     messages,
                     tokenize=False,
