@@ -8,6 +8,7 @@ import time
 import json
 import sys
 import os
+import resource
 
 from tqdm import tqdm
 import yaml
@@ -47,6 +48,29 @@ dataset2prompt = {
 dataset2maxlen = {
     "multifieldqa_en": 1,
 }
+
+
+def _bytes_to_gib(num_bytes):
+    return num_bytes / (1024**3)
+
+
+def _get_gpu_mem_used_total(device_id):
+    if not torch.cuda.is_available():
+        return None
+
+    try:
+        device = torch.device(f"cuda:{int(device_id)}")
+        torch.cuda.synchronize(device)
+        free_bytes, total_bytes = torch.cuda.mem_get_info(device)
+        used_bytes = total_bytes - free_bytes
+        return used_bytes, total_bytes
+    except Exception:
+        return None
+
+
+def _get_process_rss_mb():
+    # Linux ru_maxrss unit is KB.
+    return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024.0
 
 
 def run_target_length(m, yaml_args, reranker, compressor, llm):
@@ -169,10 +193,13 @@ def build_components(yaml_args):
     # 1) get reranker
     ranker = None
     if yaml_args["reranker_config"].get("model_type") == "rerank":
-        os.environ["CUDA_VISIBLE_DEVICES"] = str(yaml_args["reranker_config"]["device_id"])
+        reranker_device_id = yaml_args["reranker_config"]["device_id"]
+        os.environ["CUDA_VISIBLE_DEVICES"] = str(reranker_device_id)
+        gpu_mem_before = _get_gpu_mem_used_total(reranker_device_id)
+        rss_before = _get_process_rss_mb()
         ranker = RerankCompressor(
             yaml_args["reranker_config"]["model_name"],
-            f"cuda:{yaml_args['reranker_config']['device_id']}",
+            f"cuda:{reranker_device_id}",
             chunk_end_tokens=[
                 "。",
                 "！",
@@ -187,6 +214,19 @@ def build_components(yaml_args):
             ],
         )
         ranker.max_position_embeddings = yaml_args["reranker_config"]["max_position_embeddings"]
+
+        gpu_mem_after = _get_gpu_mem_used_total(reranker_device_id)
+        rss_after = _get_process_rss_mb()
+        if gpu_mem_before is not None and gpu_mem_after is not None:
+            used_before, total_bytes = gpu_mem_before
+            used_after, _ = gpu_mem_after
+            delta_bytes = used_after - used_before
+            print(
+                "[MEM][reranker] "
+                f"GPU{reranker_device_id} used={_bytes_to_gib(used_after):.3f} GiB / {_bytes_to_gib(total_bytes):.3f} GiB, "
+                f"delta={_bytes_to_gib(delta_bytes):.3f} GiB"
+            )
+        print(f"[MEM][reranker] process_rss={rss_after:.1f} MB, delta={rss_after - rss_before:.1f} MB")
 
     # 2) get compressor
     compressor = None

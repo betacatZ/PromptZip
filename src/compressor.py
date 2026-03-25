@@ -654,7 +654,7 @@ class RerankCompressor(BaseCompressor):
     ):
         if query == "":
             query = "Summarize the document"
-        
+
         if chunk_method == "bypunc":
             chunk_end_tokens = self.chunk_end_tokens
             chunks = self._chunk_context(doc, chunk_end_tokens, chunk_size)
@@ -692,6 +692,7 @@ class RerankCompressor(BaseCompressor):
                     batch_scores = self.compute_logits(batch_inputs)
 
                 scores.extend(batch_scores)
+                print("after generation memory:", (torch.cuda.max_memory_allocated(torch.cuda.current_device())))
 
             elif self.engine == "vllm":
                 if instruction is None:
@@ -727,7 +728,6 @@ class RerankCompressor(BaseCompressor):
             topk_imp = sorted(sorted(remaining_indices, key=lambda i: scores[i], reverse=True)[:k_imp])
             selected_indices = sorted(selected.union(topk_imp).union({0, n - 1}))
             selected_chunks = [chunks[i] for i in selected_indices]
-
 
         elif selection_mode == "topp":
             sorted_indices = sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)
