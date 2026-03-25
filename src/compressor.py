@@ -692,7 +692,19 @@ class RerankCompressor(BaseCompressor):
                     batch_scores = self.compute_logits(batch_inputs)
 
                 scores.extend(batch_scores)
-                print("after generation memory:", (torch.cuda.max_memory_allocated(torch.cuda.current_device())))
+                if torch.cuda.is_available():
+                    try:
+                        cur_dev = torch.cuda.current_device()
+                        max_allocated = torch.cuda.max_memory_allocated(cur_dev)
+                        self.logger.warning(
+                            "after generation memory: cuda:%s max_memory_allocated=%d",
+                            cur_dev,
+                            max_allocated,
+                        )
+                    except Exception as e:
+                        self.logger.warning("after generation memory: failed to read cuda memory: %s", e)
+                else:
+                    self.logger.warning("after generation memory: CUDA is not available")
 
             elif self.engine == "vllm":
                 if instruction is None:

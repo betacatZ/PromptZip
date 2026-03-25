@@ -54,18 +54,36 @@ def _bytes_to_gib(num_bytes):
     return num_bytes / (1024**3)
 
 
-def _get_gpu_mem_used_total(device_id):
+def _get_gpu_mem_used_total(device_id=None):
     if not torch.cuda.is_available():
         return None
 
+    candidate_indices = []
+    if device_id is not None:
+        try:
+            candidate_indices.append(int(device_id))
+        except Exception:
+            pass
     try:
-        device = torch.device(f"cuda:{int(device_id)}")
-        torch.cuda.synchronize(device)
-        free_bytes, total_bytes = torch.cuda.mem_get_info(device)
-        used_bytes = total_bytes - free_bytes
-        return used_bytes, total_bytes
+        candidate_indices.append(torch.cuda.current_device())
     except Exception:
-        return None
+        pass
+    candidate_indices.append(0)
+
+    seen = set()
+    for idx in candidate_indices:
+        if idx in seen:
+            continue
+        seen.add(idx)
+        try:
+            device = torch.device(f"cuda:{idx}")
+            torch.cuda.synchronize(device)
+            free_bytes, total_bytes = torch.cuda.mem_get_info(device)
+            used_bytes = total_bytes - free_bytes
+            return idx, used_bytes, total_bytes
+        except Exception:
+            continue
+    return None
 
 
 def _get_process_rss_mb():
@@ -218,14 +236,18 @@ def build_components(yaml_args):
         gpu_mem_after = _get_gpu_mem_used_total(reranker_device_id)
         rss_after = _get_process_rss_mb()
         if gpu_mem_before is not None and gpu_mem_after is not None:
-            used_before, total_bytes = gpu_mem_before
-            used_after, _ = gpu_mem_after
+            gpu_idx_before, used_before, total_bytes = gpu_mem_before
+            gpu_idx_after, used_after, _ = gpu_mem_after
             delta_bytes = used_after - used_before
             print(
                 "[MEM][reranker] "
-                f"GPU{reranker_device_id} used={_bytes_to_gib(used_after):.3f} GiB / {_bytes_to_gib(total_bytes):.3f} GiB, "
+                f"GPU{gpu_idx_after} used={_bytes_to_gib(used_after):.3f} GiB / {_bytes_to_gib(total_bytes):.3f} GiB, "
                 f"delta={_bytes_to_gib(delta_bytes):.3f} GiB"
             )
+            if gpu_idx_before != gpu_idx_after:
+                print(f"[MEM][reranker] note: sampled GPU index changed from {gpu_idx_before} to {gpu_idx_after}")
+        else:
+            print("[MEM][reranker] GPU memory unavailable (cuda not ready or device index not accessible)")
         print(f"[MEM][reranker] process_rss={rss_after:.1f} MB, delta={rss_after - rss_before:.1f} MB")
 
     # 2) get compressor
