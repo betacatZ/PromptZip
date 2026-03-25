@@ -13,13 +13,22 @@ dataset:
   dataset_name: longbench
   dataset_dir: /home/data/longbench
 sparse_config:
-  sparse_type: specpc
-  max_capacity_prompt: 1024
-  window_size: 64
-  pool_type: max
-  kernel_size: 64
-  neighbor_tokens: 64
-  reduction_type: max
-  lookahead_tokens: 1
-  starting_layer_index: 8
-  weighted_query: true
+  sparse_type: speckvpc
+  specpc_config:
+    max_capacity_prompt: 2048
+    window_size: 64
+    pool_type: max
+    kernel_size: 32
+    neighbor_tokens: 32
+    reduction_type: max
+    lookahead_tokens: null
+    starting_layer_index: 8
+    weighted_query: true
+  speckv_config:
+    max_capacity_prompt: 1024
+    window_size: 32
+    pool_type: max
+    kernel_size: 7
+    reduction_type: max
+    prefill_window_size: 2048
+    prefill_vertical_size: 2048
