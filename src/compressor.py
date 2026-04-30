@@ -1028,7 +1028,7 @@ class EmbeddingCompressor(BaseCompressor):
     def compress(
         self,
         doc: str,
-        instruction: str | None = None,
+        instruction: str | None,
         query: str,
         chunk_size: int,
         rate: float = 0.0,
