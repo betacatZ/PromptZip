@@ -38,6 +38,7 @@ from src.compressor import (
     RerankCompressor,
     LongLLMLinguaTokenCompressor,
     PromptCompressor,
+    EmbeddingCompressor,
 )
 
 
@@ -512,6 +513,23 @@ def build_components(yaml_args):
             ],
         )
         ranker.max_position_embeddings = yaml_args["reranker_config"]["max_position_embeddings"]
+    elif yaml_args["reranker_config"].get("model_type") == "embedding":
+        ranker = EmbeddingCompressor(
+            model_name=yaml_args["reranker_config"]["model_name"],
+            device=f"cuda:{yaml_args['reranker_config']['device_id']}",
+            chunk_end_tokens=[
+                "。",
+                "！",
+                "？",
+                ".",
+                "!",
+                "?",
+                "\n",
+                "。\n",
+                "？\n",
+                "！\n",
+            ],
+        )
 
     # 2) get compressor
     compressor = None
@@ -606,17 +624,28 @@ async def predict(yaml_args, json_path, enable_test=False):
                         if sample["dataset"] in ["gov_report", "multi_news", "vcsum"]:
                             sample["input"] = QUERY[sample["dataset"]]
 
-                        _, select_chunks, _ = reranker.compress(
-                            context,
-                            None,
-                            sample["input"],
-                            run_config["reranker_config"]["chunk_size"],
-                            run_config["reranker_config"]["rate"],
-                            dataset=f"{sample['dataset']}_{sample['_id']}",
-                            chunk_method="bypunc",
-                            selection_mode=run_config["reranker_config"].get("selection_mode", "topk"),
-                            result_path=run_save_dir,
-                        )
+                        if yaml_args["reranker_config"].get("model_type") == "embedding" and type(reranker) == EmbeddingCompressor:
+                            _, select_chunks, _ = reranker.compress(
+                                context,
+                                None,
+                                sample["input"],
+                                run_config["reranker_config"]["chunk_size"],
+                                run_config["reranker_config"]["rate"],
+                                chunk_method="bypunc",
+                                selection_mode=run_config["reranker_config"].get("selection_mode", "topk"),
+                            )
+                        elif yaml_args["reranker_config"].get("model_type") == "rerank" and type(reranker) == RerankCompressor:
+                            _, select_chunks, _ = reranker.compress(
+                                context,
+                                None,
+                                sample["input"],
+                                run_config["reranker_config"]["chunk_size"],
+                                run_config["reranker_config"]["rate"],
+                                dataset=f"{sample['dataset']}_{sample['_id']}",
+                                chunk_method="bypunc",
+                                selection_mode=run_config["reranker_config"].get("selection_mode", "topk"),
+                                result_path=run_save_dir,
+                            )
                         context = "".join(select_chunks)
                         compressed_context = context
 

@@ -22,6 +22,7 @@ from scipy import stats
 from transformers import (
     DynamicCache,
     AutoConfig,
+    AutoModel,
     AutoModelForCausalLM,
     AutoModelForTokenClassification,
     AutoTokenizer,
@@ -643,7 +644,7 @@ class RerankCompressor(BaseCompressor):
     def compress(
         self,
         doc: str,
-        instruction: str,
+        instruction: str | None,
         query: str,
         chunk_size: int,
         rate: float = 0.0,
@@ -999,6 +1000,190 @@ class RerankCompressor(BaseCompressor):
         scores = batch_scores[:, 1].exp().tolist()
 
         return scores
+
+
+class EmbeddingCompressor(BaseCompressor):
+    def __init__(
+        self,
+        model_name="Qwen/Qwen3-Embedding-0.6B",
+        device: str = "cuda",
+        chunk_end_tokens=["。", "！", "？", ".", "!", "?", "\n", "。\n"],
+        trust_remote_code: bool = True,
+        attn_implementation: str = "flash_attention_2",
+    ):
+        super().__init__("EmbeddingCompressor")
+        self.tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=trust_remote_code)
+
+        self.model = AutoModel.from_pretrained(
+            model_name,
+            trust_remote_code=trust_remote_code,
+            attn_implementation=attn_implementation,
+            torch_dtype="auto",
+        )
+        self.device = device
+        self.model.to(torch.device(device))
+        self.chunk_end_tokens = chunk_end_tokens
+        self.default_instruction = "Given a web search query, retrieve relevant passages that answer the query"
+
+    def compress(
+        self,
+        doc: str,
+        instruction: str | None = None,
+        query: str,
+        chunk_size: int,
+        rate: float = 0.0,
+        chunk_method="bypunc",
+        selection_mode="topk",
+    ):
+        if query == "":
+            query = "Summarize the document"
+        if instruction is None:
+            instruction = self.default_instruction
+
+        if chunk_method == "bypunc":
+            chunk_end_tokens = self.chunk_end_tokens
+            chunks = self._chunk_context(doc, chunk_end_tokens, chunk_size)
+
+        batch_size = 16
+        queries = [self.get_detailed_instruct(instruction, query)]
+        n = len(chunks)
+        k = max(1, int(n * rate))
+        k = min(k, n)
+        k_uni = max(1, k // 3)
+        k_uni = min(k_uni, n)
+        k_imp = k - k_uni
+        chunk_emb_batches = []
+
+        query_batch = self.tokenizer(
+            queries,
+            padding=True,
+            truncation=True,
+            max_length=8192,
+            return_tensors="pt",
+        )
+        query_batch = {k_: v.to(self.device) for k_, v in query_batch.items()}
+        with torch.no_grad():
+            query_outputs = self.model(**query_batch)
+            query_embedding = self.last_token_pool(query_outputs.last_hidden_state, query_batch["attention_mask"])
+            query_embedding = F.normalize(query_embedding, p=2, dim=1)
+
+        all_chunk_tokens = self.tokenizer(
+            chunks,
+            padding=True,
+            truncation=True,
+            max_length=8192,
+            return_tensors="pt",
+        )
+        all_input_ids = all_chunk_tokens["input_ids"].to(self.device)
+        all_attention_mask = all_chunk_tokens["attention_mask"].to(self.device)
+
+        for i in range(0, len(chunks), batch_size):
+            batch_input_ids = all_input_ids[i : i + batch_size]
+            batch_attention_mask = all_attention_mask[i : i + batch_size]
+
+            with torch.no_grad():
+                outputs = self.model(input_ids=batch_input_ids, attention_mask=batch_attention_mask)
+                embeddings = self.last_token_pool(outputs.last_hidden_state, batch_attention_mask)
+                embeddings = F.normalize(embeddings, p=2, dim=1)
+                chunk_emb_batches.append(embeddings)
+
+        chunk_embeddings = torch.cat(chunk_emb_batches, dim=0)
+        similarity_scores = (chunk_embeddings @ query_embedding.T).squeeze(-1)
+        scores = similarity_scores.detach().cpu().tolist()
+
+        if selection_mode in ["topk"]:
+            emb_np = chunk_embeddings.detach().cpu().numpy()
+            kmeans = KMeans(n_clusters=k_uni, random_state=42, n_init="auto")
+            labels = kmeans.fit_predict(emb_np)
+
+            # Step 1: 每个簇先选一个中心代表 chunk。
+            center_indices = []
+            for cid in range(k_uni):
+                cluster_indices = np.where(labels == cid)[0]
+                if cluster_indices.size == 0:
+                    continue
+                center = kmeans.cluster_centers_[cid]
+                cluster_points = emb_np[cluster_indices]
+                dists = np.linalg.norm(cluster_points - center, axis=1)
+                best_idx = int(cluster_indices[np.argmin(dists)])
+                center_indices.append(best_idx)
+
+            selected_set = set(center_indices)
+
+            # Step 2: 在非中心 chunk 中选 k_imp 个最重要（与 query 最相关）chunk。
+            if k_imp > 0:
+                remain_indices = [i for i in range(n) if i not in selected_set]
+                if len(remain_indices) > 0:
+                    remain_scores = similarity_scores[remain_indices]
+                    imp_local = torch.argsort(remain_scores, descending=True)[:k_imp].tolist()
+                    imp_indices = [remain_indices[i] for i in imp_local]
+                    selected_set.update(imp_indices)
+
+            selected_indices = sorted(selected_set)
+
+        elif selection_mode == "pure-topk":
+            selected_indices = torch.argsort(similarity_scores, descending=True)[:k].tolist()
+            selected_indices = sorted(selected_indices)
+
+        else:
+            raise ValueError(f"Unsupported selection_mode: {selection_mode}")
+
+        selected_chunks = [chunks[i] for i in selected_indices]
+        return scores, selected_chunks, chunks
+
+    def last_token_pool(self, last_hidden_states, attention_mask):
+        left_padding = attention_mask[:, -1].sum() == attention_mask.shape[0]
+        if left_padding:
+            return last_hidden_states[:, -1]
+        else:
+            sequence_lengths = attention_mask.sum(dim=1) - 1
+            batch_size = last_hidden_states.shape[0]
+            return last_hidden_states[torch.arange(batch_size, device=last_hidden_states.device), sequence_lengths]
+
+    def get_detailed_instruct(self, task_description: str, query: str) -> str:
+        return f"Instruct: {task_description}\nQuery:{query}"
+
+    def _chunk_context(self, origin_text, chunk_end_tokens, chunk_size):
+        """把一段长文本 origin_text 按最大长度 chunk_size 切分成多个 chunk，
+        每个 chunk 不会超过最大 token 长度，同时尽量在指定的 chunk_end_tokens 处断开，
+        避免在小数点处切分。
+        """
+        tokenized_end_tokens = []
+        for t in chunk_end_tokens:
+            tokens = self.tokenizer.tokenize(t)
+            tokenized_end_tokens.extend(tokens)
+
+        max_len = chunk_size
+        origin_list = []
+        origin_tokens = self.tokenizer.tokenize(origin_text)
+        n = len(origin_tokens)
+        st = 0
+
+        while st < n:
+            if st + max_len > n - 1:
+                chunk = self.tokenizer.convert_tokens_to_string(origin_tokens[st:n])
+                origin_list.append(chunk)
+                break
+            else:
+                ed = st + max_len
+                # 从后向前寻找断点
+                for j in range(0, ed - st):
+                    token = origin_tokens[ed - j]
+                    if token in tokenized_end_tokens:
+                        # 避免在小数点处切分
+                        if token == ".":
+                            prev_token = origin_tokens[ed - j - 1] if ed - j - 1 >= 0 else ""
+                            next_token = origin_tokens[ed - j + 1] if ed - j + 1 < n else ""
+                            if prev_token.isdigit() and next_token.isdigit():
+                                continue  # 忽略这个小数点
+
+                        ed = ed - j
+                        break
+                chunk = self.tokenizer.convert_tokens_to_string(origin_tokens[st : ed + 1])
+                origin_list.append(chunk)
+                st = ed + 1
+
+        return origin_list
 
 
 class LongLLMLinguaTokenCompressor(BaseCompressor):
