@@ -1092,7 +1092,7 @@ class EmbeddingCompressor(BaseCompressor):
         scores = similarity_scores.detach().cpu().tolist()
 
         if selection_mode in ["topk"]:
-            emb_np = chunk_embeddings.detach().cpu().numpy()
+            emb_np = chunk_embeddings.to(torch.float32).cpu().numpy()
             kmeans = KMeans(n_clusters=k_uni, random_state=42, n_init="auto")
             labels = kmeans.fit_predict(emb_np)
 
