@@ -105,30 +105,42 @@ dataset2prompt = {
     "narrativeqa": [
         {
             "role": "system",
-            "content": "You are a helpful assistant. You are given a story, which can be either a novel or a movie script, and a question. Answer the question as concisely as you can, using a single phrase if possible. Do not provide any explanation.",
+            "content": "You are an assistant that answers questions based on a story (novel or movie script).",
         },
-        {"role": "user", "content": "{context}\n\nQuestion: {input}"},
+        {
+            "role": "user",
+            "content": "Story:\n{context}\n\nQuestion:\n{input}\n\nAnswer the question as concisely as possible, using a single phrase if possible. Do not provide any explanation.",
+        },
     ],
     "qasper": [
         {
             "role": "system",
-            "content": 'You are a scientific assistant. Answer the question based on the article. If the question cannot be answered, write "unanswerable". For yes/no questions, respond with "yes", "no", or "unanswerable". Do not provide any explanations.',
+            "content": "You are a helpful assistant. Answer questions based on a scientific article.",
         },
-        {"role": "user", "content": "{context}\n\nQuestion: {input}"},
+        {
+            "role": "user",
+            "content": 'Article:\n{context}\n\nQuestion:\n{input}\n\nAnswer as concisely as possible.\n- If unanswerable, output: "unanswerable".\n- If yes/no, output: "yes", "no", or "unanswerable".\nDo not provide any explanation.',
+        },
     ],
     "multifieldqa_en": [
         {
             "role": "system",
-            "content": "You are a helpful assistant. Answer the question based on the given text. Only provide the answer and do not give any additional words.",
+            "content": "You are a helpful assistant. Answer questions based on a given text.",
         },
-        {"role": "user", "content": "{context}\n\nQuestion: {input}"},
+        {
+            "role": "user",
+            "content": "Text:\n{context}\n\nQuestion:\n{input}\n\nGive a brief answer. Only output the answer and nothing else.",
+        },
     ],
     "multifieldqa_zh": [
         {
             "role": "system",
-            "content": "你是一个中文问答助手。请根据文章简洁地回答问题，只提供答案，不要额外解释。",
+            "content": "你是一个根据给定文本回答问题的助手,你需要根据给定的文本回答问题。请用中文给出简短答案。只输出答案，不要包含任何解释或多余内容。",
         },
-        {"role": "user", "content": "{context}\n\n问题：{input}"},
+        {
+            "role": "user",
+            "content": "文本：\n{context}\n\n问题：\n{input}\n\n请用中文简短作答，只输出答案，不要输出任何多余内容。",
+        },
     ],
     "hotpotqa": [
         {
@@ -137,7 +149,7 @@ dataset2prompt = {
         },
         {
             "role": "user",
-            "content": "The following are the given passages:\n{context}\n\nAnswer the question based on the given passages. Only give me the answer and do not output any other words.\n\nQuestion: {input}",
+            "content": "Passages:\n{context}\n\nQuestion:\n{input}\n\nAnswer the question using only the information in the passages. Output only the final answer with no explanation or extra words.",
         },
     ],
     "2wikimqa": [
@@ -147,17 +159,17 @@ dataset2prompt = {
         },
         {
             "role": "user",
-            "content": "The following are the given passages:\n{context}\n\nAnswer the question based on the given passages. Only give me the answer and do not output any other words.\n\nQuestion: {input}",
+            "content": "Passages:\n{context}\n\nQuestion:\n{input}\n\nAnswer using only the given passages. Output only the final answer without explanation.",
         },
     ],
     "musique": [
         {
             "role": "system",
-            "content": "You are a helpful assistant. Answer the question based on the given passages. Only give me the answer and do not output any other words..",
+            "content": "You are a helpful assistant. Answer the question based on the given passages. Only give me the answer and do not output any other words.",
         },
         {
             "role": "user",
-            "content": "The following are the given passages:\n{context}\n\nAnswer the question based on the given passages. Only give me the answer and do not output any other words.\n\nQuestion: {input}",
+            "content": "Passages:\n{context}\n\nQuestion:\n{input}\n\nAnswer using only the provided passages. Only output the final answer without any explanation.",
         },
     ],
     "dureader": [
@@ -165,35 +177,38 @@ dataset2prompt = {
             "role": "system",
             "content": "你是一个中文问答助手。请根据给定文章回答问题。只给出答案，不要解释。",
         },
-        {"role": "user", "content": "{context}\n\n问题：{input}"},
+        {
+            "role": "user",
+            "content": "文章：\n{context}\n\n问题：\n{input}\n\n请仅根据文章内容回答问题，只输出最终答案，不要解释或添加任何多余内容。",
+        },
     ],
     "gov_report": [
         {
             "role": "system",
-            "content": "You are a helpful assistant. You are given a report by a government agency. Write a one-page summary of the report.",
+            "content": "You are an assistant that summarizes government reports.",
         },
-        {"role": "user", "content": "{context}\n\nSummary:"},
+        {
+            "role": "user",
+            "content": "Report:\n{context}\n\nWrite a concise one-page summary of the report. Focus on key points, findings, and conclusions. Do not include any extra commentary.",
+        },
     ],
     "qmsum": [
+        {"role": "system", "content": "You are an assistant that answers questions based on meeting transcripts."},
         {
-            "role": "system",
-            "content": "You are a helpful assistant. Answer the query based on the meeting transcript in one or more sentences.",
+            "role": "user",
+            "content": "Transcript:\n{context}\n\nQuery:\n{input}\n\nAnswer the query in one or more concise sentences based only on the transcript.",
         },
-        {"role": "user", "content": "{context}\n\nQuery: {input}"},
     ],
     "multi_news": [
+        {"role": "system", "content": "You are an assistant that summarizes multiple news articles."},
         {
-            "role": "system",
-            "content": "You are a helpful assistant. Read the news passages and write a one-page summary. Do not provide additional explanations.",
+            "role": "user",
+            "content": "News articles:\n{context}\n\nWrite a concise one-page summary covering the key events and main points across all articles. Do not include any extra commentary.",
         },
-        {"role": "user", "content": "{context}\n\nPlease provide the summary below."},
     ],
     "vcsum": [
-        {
-            "role": "system",
-            "content": "你是会议总结助手。请根据会议记录写一段总结，不要解释。",
-        },
-        {"role": "user", "content": "{context}\n\n会议总结："},
+        {"role": "system", "content": "你是一个用于总结会议记录的助手。"},
+        {"role": "user", "content": "会议记录：\n{context}\n\n请对会议内容进行简要总结，概括主要讨论内容和结论。"},
     ],
     "trec": [
         {
@@ -264,6 +279,21 @@ dataset2prompt = {
         },
         {"role": "user", "content": "{context}{input}\nNext line of code:\n"},
     ],
+}
+
+INSTRUCTION = {
+    "narrativeqa": "Find passages that answer the question.",
+    "qasper": "Find passages that answer the question.",
+    "multifieldqa_en": "Find passages that answer the question.",
+    "multifieldqa_zh": "检索有助于回答问题的相关内容。",
+    "hotpotqa": "Find passages that provide evidence useful for answering the question.",
+    "2wikimqa": "Find passages that provide evidence useful for answering the question.",
+    "musique": "Find passages that support multi-hop reasoning for the question.",
+    "dureader": "检索有助于回答问题的相关内容。",
+    "gov_report": "Find passages containing important information for summarization.",
+    "qmsum": "Find transcript segments relevant to the query.",
+    "multi_news": "Find passages containing key information for summarization.",
+    "vcsum": "检索与会议总结相关的重要内容。",
 }
 
 # dataset2prompt = {
@@ -595,8 +625,6 @@ async def predict(yaml_args, json_path, enable_test=False):
     async def producer(dataset):
         dataset_len = len(dataset)
 
-        # 选择分词器
-
         for i in tqdm(range(0, dataset_len, batch_size)):
             batch = [dataset[j] for j in range(i, min(i + batch_size, dataset_len))]
 
@@ -624,20 +652,26 @@ async def predict(yaml_args, json_path, enable_test=False):
                         if sample["dataset"] in ["gov_report", "multi_news", "vcsum"]:
                             sample["input"] = QUERY[sample["dataset"]]
 
-                        if yaml_args["reranker_config"].get("model_type") == "embedding" and type(reranker) == EmbeddingCompressor:
+                        if (
+                            yaml_args["reranker_config"].get("model_type") == "embedding"
+                            and type(reranker) is EmbeddingCompressor
+                        ):
                             _, select_chunks, _ = reranker.compress(
                                 context,
-                                None,
+                                INSTRUCTION[sample["dataset"]],
                                 sample["input"],
                                 run_config["reranker_config"]["chunk_size"],
                                 run_config["reranker_config"]["rate"],
                                 chunk_method="bypunc",
                                 selection_mode=run_config["reranker_config"].get("selection_mode", "topk"),
                             )
-                        elif yaml_args["reranker_config"].get("model_type") == "rerank" and type(reranker) == RerankCompressor:
+                        elif (
+                            yaml_args["reranker_config"].get("model_type") == "rerank"
+                            and type(reranker) is RerankCompressor
+                        ):
                             _, select_chunks, _ = reranker.compress(
                                 context,
-                                None,
+                                INSTRUCTION[sample["dataset"]],
                                 sample["input"],
                                 run_config["reranker_config"]["chunk_size"],
                                 run_config["reranker_config"]["rate"],
@@ -683,23 +717,6 @@ async def predict(yaml_args, json_path, enable_test=False):
                                         use_sentence_level_filter=True,
                                     )
                             if yaml_args["compressor_config"].get("compress_level") == "token":
-                                # force_tokens = [
-                                #     "!",
-                                #     ".",
-                                #     "?",
-                                #     "。",
-                                #     "？",
-                                #     "！",
-                                #     "\n",
-                                #     "{{",
-                                #     "}}",
-                                #     "#",
-                                #     "##",
-                                #     "mediaItems",
-                                #     "Image:",
-                                #     "Image Caption:",
-                                #     "Image Alt Text:",
-                                # ]
                                 force_tokens = ["!", ".", "?", "\n", ","]
                                 if yaml_args["compressor_config"].get("rate"):
                                     compressed_context = compressor.compress_prompt(
@@ -745,9 +762,10 @@ async def predict(yaml_args, json_path, enable_test=False):
                 # )
                 # model_inputs = tokenizer(prompt, return_tensors="pt")
 
-                # if len(token_ids) > (yaml_args["exp_config"]["max_total_token"] - max_gen):
-                #     half = int((yaml_args["exp_config"]["max_total_token"] - max_gen) / 2) - 1
-                #     prompt = tokenizer.decode(token_ids[:half]) + tokenizer.decode(token_ids[-half:])
+                token_ids = tokenizer.encode(prompt)
+                if len(token_ids) > (yaml_args["exp_config"]["max_total_token"] - max_gen):
+                    half = int((yaml_args["exp_config"]["max_total_token"] - max_gen) / 2) - 1
+                    prompt = tokenizer.decode(token_ids[:half]) + tokenizer.decode(token_ids[-half:])
 
                 batch_prompt.append(prompt)
 
