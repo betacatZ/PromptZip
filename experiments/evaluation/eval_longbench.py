@@ -109,7 +109,7 @@ dataset2prompt = {
         },
         {
             "role": "user",
-            "content": "Story:\n{context}\n\nQuestion:\n{input}\n\nAnswer the question as concisely as possible, using a single phrase if possible. Do not provide any explanation.",
+            "content": "<Story>\n{context}\n</Story>\n\n<Question>\n{input}\n</Question>\n\n<Instruction>\nAnswer the question as concisely as possible, using a single phrase if possible. Do not provide any explanation.\n</Instruction>",
         },
     ],
     "qasper": [
@@ -119,7 +119,7 @@ dataset2prompt = {
         },
         {
             "role": "user",
-            "content": 'Article:\n{context}\n\nQuestion:\n{input}\n\nAnswer as concisely as possible.\n- If unanswerable, output: "unanswerable".\n- If yes/no, output: "yes", "no", or "unanswerable".\nDo not provide any explanation.',
+            "content": '<Article>\n{context}\n</Article>\n\n<Question>\n{input}\n</Question>\n\n<Instruction>\nAnswer as concisely as possible.\n- If unanswerable, output: "unanswerable".\n- If yes/no, output: "yes", "no", or "unanswerable".\nDo not provide any explanation.\n</Instruction>',
         },
     ],
     "multifieldqa_en": [
@@ -129,17 +129,17 @@ dataset2prompt = {
         },
         {
             "role": "user",
-            "content": "Text:\n{context}\n\nQuestion:\n{input}\n\nGive a brief answer. Only output the answer and nothing else.",
+            "content": "<Text>\n{context}\n</Text>\n\n<Question>\n{input}\n</Question>\n\n<Instruction>\nGive a brief answer. Only output the answer and nothing else.\n</Instruction>",
         },
     ],
     "multifieldqa_zh": [
         {
             "role": "system",
-            "content": "你是一个根据给定文本回答问题的助手,你需要根据给定的文本回答问题。请用中文给出简短答案。只输出答案，不要包含任何解释或多余内容。",
+            "content": "你是一个根据给定文本回答问题的助手，你需要根据给定的文本回答问题。请用中文给出简短答案。只输出答案，不要包含任何解释或多余内容。",
         },
         {
             "role": "user",
-            "content": "文本：\n{context}\n\n问题：\n{input}\n\n请用中文简短作答，只输出答案，不要输出任何多余内容。",
+            "content": "<文本>\n{context}\n</文本>\n\n<问题>\n{input}\n</问题>\n\n<要求>\n请用中文简短作答，只输出答案，不要输出任何多余内容。\n</要求>",
         },
     ],
     "hotpotqa": [
@@ -149,7 +149,7 @@ dataset2prompt = {
         },
         {
             "role": "user",
-            "content": "Passages:\n{context}\n\nQuestion:\n{input}\n\nAnswer the question using only the information in the passages. Output only the final answer with no explanation or extra words.",
+            "content": "<Passages>\n{context}\n</Passages>\n\n<Question>\n{input}\n</Question>\n\n<Instruction>\nAnswer the question using only the information in the passages. Output only the final answer with no explanation or extra words.\n</Instruction>",
         },
     ],
     "2wikimqa": [
@@ -159,7 +159,7 @@ dataset2prompt = {
         },
         {
             "role": "user",
-            "content": "Passages:\n{context}\n\nQuestion:\n{input}\n\nAnswer using only the given passages. Output only the final answer without explanation.",
+            "content": "<Passages>\n{context}\n</Passages>\n\n<Question>\n{input}\n</Question>\n\n<Instruction>\nAnswer using only the given passages. Output only the final answer without explanation.\n</Instruction>",
         },
     ],
     "musique": [
@@ -169,7 +169,7 @@ dataset2prompt = {
         },
         {
             "role": "user",
-            "content": "Passages:\n{context}\n\nQuestion:\n{input}\n\nAnswer using only the provided passages. Only output the final answer without any explanation.",
+            "content": "<Passages>\n{context}\n</Passages>\n\n<Question>\n{input}\n</Question>\n\n<Instruction>\nAnswer using only the provided passages. Only output the final answer without any explanation.\n</Instruction>",
         },
     ],
     "dureader": [
@@ -179,7 +179,7 @@ dataset2prompt = {
         },
         {
             "role": "user",
-            "content": "文章：\n{context}\n\n问题：\n{input}\n\n请仅根据文章内容回答问题，只输出最终答案，不要解释或添加任何多余内容。",
+            "content": "<文章>\n{context}\n</文章>\n\n<问题>\n{input}\n</问题>\n\n<要求>\n请仅根据文章内容回答问题，只输出最终答案，不要解释或添加任何多余内容。\n</要求>",
         },
     ],
     "gov_report": [
@@ -189,26 +189,38 @@ dataset2prompt = {
         },
         {
             "role": "user",
-            "content": "Report:\n{context}\n\nWrite a concise one-page summary of the report. Focus on key points, findings, and conclusions. Do not include any extra commentary.",
+            "content": "<Report>\n{context}\n</Report>\n\n<Instruction>\nWrite a concise one-page summary of the report. Focus on key points, findings, and conclusions. Do not include any extra commentary.\n</Instruction>",
         },
     ],
     "qmsum": [
-        {"role": "system", "content": "You are an assistant that answers questions based on meeting transcripts."},
+        {
+            "role": "system",
+            "content": "You are an assistant that answers questions based on meeting transcripts.",
+        },
         {
             "role": "user",
-            "content": "Transcript:\n{context}\n\nQuery:\n{input}\n\nAnswer the query in one or more concise sentences based only on the transcript.",
+            "content": "<Transcript>\n{context}\n</Transcript>\n\n<Query>\n{input}\n</Query>\n\n<Instruction>\nAnswer the query in one or more concise sentences based only on the transcript.\n</Instruction>",
         },
     ],
     "multi_news": [
-        {"role": "system", "content": "You are an assistant that summarizes multiple news articles."},
+        {
+            "role": "system",
+            "content": "You are an assistant that summarizes multiple news articles.",
+        },
         {
             "role": "user",
-            "content": "News articles:\n{context}\n\nWrite a concise one-page summary covering the key events and main points across all articles. Do not include any extra commentary.",
+            "content": "<NewsArticles>\n{context}\n</NewsArticles>\n\n<Instruction>\nWrite a concise one-page summary covering the key events and main points across all articles. Do not include any extra commentary.\n</Instruction>",
         },
     ],
     "vcsum": [
-        {"role": "system", "content": "你是一个用于总结会议记录的助手。"},
-        {"role": "user", "content": "会议记录：\n{context}\n\n请对会议内容进行简要总结，概括主要讨论内容和结论。"},
+        {
+            "role": "system",
+            "content": "你是一个用于总结会议记录的助手。",
+        },
+        {
+            "role": "user",
+            "content": "<会议记录>\n{context}\n</会议记录>\n\n<要求>\n请对会议内容进行简要总结，概括主要讨论内容和结论。\n</要求>",
+        },
     ],
     "trec": [
         {
