@@ -28,7 +28,7 @@ from transformers import (
     AutoTokenizer,
 )
 import copy
-import os
+import json
 import sys
 from optimum.onnxruntime import ORTModelForTokenClassification
 
@@ -689,7 +689,7 @@ class RerankCompressor(BaseCompressor):
                 batch_pairs = [self.format_instruction(instruction, query, chunk) for chunk in batch_chunks]
                 batch_inputs = self.process_inputs(batch_pairs)
 
-                with torch.no_grad():  # 确保不保存梯度
+                with torch.no_grad():
                     batch_scores = self.compute_logits(batch_inputs)
 
                 scores.extend(batch_scores)
