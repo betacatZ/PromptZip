@@ -6,7 +6,6 @@ import torch.nn.functional as F
 import logging
 import math
 import gc
-import logging
 from abc import ABC
 from typing import List, Union
 from vllm import LLM, SamplingParams
@@ -15,7 +14,6 @@ import nltk
 import numpy as np
 from torch.utils.data import DataLoader
 import tiktoken
-import blingfire
 from sklearn.cluster import KMeans
 import os
 from scipy import stats
@@ -42,7 +40,6 @@ from util import (
     replace_added_token,
     seed_everything,
 )
-
 
 class BaseCompressor(ABC):
     def __init__(self, name: str = "BaseCompressor"):
@@ -675,10 +672,6 @@ class RerankCompressor(BaseCompressor):
                 chunk_ids = doc_input_ids[start:end]
                 chunks.append(self.tokenizer.decode(chunk_ids))
 
-        # with open("output_newrule.txt", "w", encoding="utf-8") as f:
-        #     for s in chunks:
-        #         f.write(s + "\n\n\n\n")
-
         batch_size = 32
         scores = []
 
@@ -1035,8 +1028,6 @@ class EmbeddingCompressor(BaseCompressor):
         chunk_method="bypunc",
         selection_mode="topk",
     ):
-        if query == "":
-            query = "Summarize the document"
         if instruction is None:
             instruction = self.default_instruction
 
@@ -1092,11 +1083,19 @@ class EmbeddingCompressor(BaseCompressor):
         scores = similarity_scores.detach().cpu().tolist()
 
         if selection_mode in ["topk"]:
+            # Step 1: 先添加首尾的 chunk
+            selected_set = set()
+            if n > 0:
+                selected_set.add(0)
+            if n > 1:
+                selected_set.add(n - 1)
+
+            # Step 2: 使用聚类选择中心代表 chunk
             emb_np = chunk_embeddings.to(torch.float32).cpu().numpy()
             kmeans = KMeans(n_clusters=k_uni, random_state=42, n_init="auto")
             labels = kmeans.fit_predict(emb_np)
 
-            # Step 1: 每个簇先选一个中心代表 chunk。
+            # 每个簇先选一个中心代表 chunk，跳过已选中的首尾
             center_indices = []
             for cid in range(k_uni):
                 cluster_indices = np.where(labels == cid)[0]
@@ -1108,9 +1107,9 @@ class EmbeddingCompressor(BaseCompressor):
                 best_idx = int(cluster_indices[np.argmin(dists)])
                 center_indices.append(best_idx)
 
-            selected_set = set(center_indices)
+            selected_set.update(center_indices)
 
-            # Step 2: 在非中心 chunk 中选 k_imp 个最重要（与 query 最相关）chunk。
+            # Step 3: 在非中心 chunk 中选 k_imp 个最重要（与 query 最相关）chunk。
             if k_imp > 0:
                 remain_indices = [i for i in range(n) if i not in selected_set]
                 if len(remain_indices) > 0:
