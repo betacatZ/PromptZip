@@ -94,6 +94,9 @@ TEMP_SCRIPT=$(mktemp /tmp/qwen3_script.XXXXXX)
 # 使用 printf 和 "" 方式写入脚本内容
 printf "%s\n" "set -e" > "$TEMP_SCRIPT"
 printf "%s\n" "" >> "$TEMP_SCRIPT"
+printf "%s\n" "# 设置库路径" >> "$TEMP_SCRIPT"
+printf "%s\n" "export LD_LIBRARY_PATH=/data/qwen3/qwen3/qwen3-reranker-0.6b" >> "$TEMP_SCRIPT"
+printf "%s\n" "" >> "$TEMP_SCRIPT"
 printf "%s\n" "# 确保使用绝对路径" >> "$TEMP_SCRIPT"
 printf "%s\n" "QWEN3_ABS_PATH=\"$QWEN3_PATH\"" >> "$TEMP_SCRIPT"
 printf "%s\n" "" >> "$TEMP_SCRIPT"
