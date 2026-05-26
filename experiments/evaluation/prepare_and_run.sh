@@ -1,5 +1,5 @@
 
-#!/usr/bin/env bash
+source ~/.zshrc
 # 兼容 zsh 和 bash
 
 # ================================================
@@ -18,11 +18,11 @@ if [ -n "$ZSH_VERSION" ]; then
 fi
 
 # 配置（请根据实际情况修改）
-LOCAL_INPUT_DIR="./outputs"              # 本地包含 JSON 文件的目录
-DEVICE_TEST_DIR="/data/zhangdeming/test" # 设备上的测试目录
-DEVICE_OUTPUT_DIR="/data/zhangdeming/output" # 设备上的输出目录
-LOCAL_OUTPUT_DIR="./device_outputs"       # 本地回收文件的目录
-QWEN3_PATH="/data/qwen3/qwen3"           # 设备上 qwen3 可执行文件的绝对路径
+LOCAL_INPUT_DIR="/data8/zhangdeming/PromptZip/GEWU-dataset/test"              # 本地包含 JSON 文件的目录
+DEVICE_TEST_DIR="/data/zhangdeming/qwen3/GEWU-dataset/test" # 设备上的测试目录
+DEVICE_OUTPUT_DIR="/data/qwen3/output/test" # 设备上的输出目录
+LOCAL_OUTPUT_DIR="/data8/zhangdeming/PromptZip/GEWU_output/test"       # 本地回收文件的目录
+QWEN3_PATH="/data/qwen3/qwen3/qwen3-reranker-0.6b/qwen3"           # 设备上 qwen3 可执行文件的绝对路径
 TOKENIZER_PATH="/data/qwen3/qwen3-reranker-0.6b/Q4_N_0_G128/tokenizer.json" # 设备上 tokenizer 路径
 PARAMS_PATH="/data/qwen3/qwen3-reranker-0.6b/Q4_N_0_G128/params" # 设备上参数路径
 
@@ -65,7 +65,7 @@ mkdir -p "$LOCAL_OUTPUT_DIR"
 
 # 3. 在设备上创建目录
 echo "在设备上创建目录..."
-shhdc shell "mkdir -p $DEVICE_TEST_DIR && mkdir -p $DEVICE_OUTPUT_DIR"
+hdc -s 100.103.109.221:8710 shell "mkdir -p $DEVICE_TEST_DIR && mkdir -p $DEVICE_OUTPUT_DIR"
 
 # 4. 发送所有 JSON 文件到设备（只在当前目录查找）
 echo "发送 JSON 文件到设备..."
@@ -76,7 +76,7 @@ for json_file in "$LOCAL_INPUT_DIR"/*.json; do
     if [ -e "$json_file" ]; then
         filename=$(basename "$json_file")
         echo "  发送: $filename"
-        hdcsend "$json_file" "$DEVICE_TEST_DIR/$filename"
+        hdc -s 100.103.109.221:8710 file send "$json_file" "$DEVICE_TEST_DIR/$filename"
         has_json_files=1
     fi
 done
@@ -88,31 +88,43 @@ fi
 # 5. 在设备上运行推理
 echo ""
 echo "在设备上运行推理..."
-shhdc shell << EOF
-    set -e
-    
-    # 确保使用绝对路径
-    QWEN3_ABS_PATH="$QWEN3_PATH"
-    
-    # 遍历所有测试 JSON 文件
-    for json_file in $DEVICE_TEST_DIR/*.json; do
-        if [ -f "\$json_file" ]; then
-            filename=\$(basename "\$json_file" .json)
-            output_file="$DEVICE_OUTPUT_DIR/\$filename.txt"
-            
-            echo "正在处理: \$filename"
-            echo "  输入文件: \$json_file"
-            echo "  输出文件: \$output_file"
-            
-            # 使用绝对路径执行
-            "\$QWEN3_ABS_PATH" "\$json_file" > "\$output_file" 2>&1 || {
-                echo "  警告: \$filename 处理失败"
-            }
-        fi
-    done
+# 创建临时脚本文件，避免 stdio TTY 模式问题
+TEMP_SCRIPT=$(mktemp /tmp/qwen3_script.XXXXXX)
 
-    echo "推理完成"
-EOF
+# 使用 printf 和 "" 方式写入脚本内容
+printf "%s\n" "set -e" > "$TEMP_SCRIPT"
+printf "%s\n" "" >> "$TEMP_SCRIPT"
+printf "%s\n" "# 确保使用绝对路径" >> "$TEMP_SCRIPT"
+printf "%s\n" "QWEN3_ABS_PATH=\"$QWEN3_PATH\"" >> "$TEMP_SCRIPT"
+printf "%s\n" "" >> "$TEMP_SCRIPT"
+printf "%s\n" "# 遍历所有测试 JSON 文件" >> "$TEMP_SCRIPT"
+printf "%s\n" "for json_file in $DEVICE_TEST_DIR/*.json; do" >> "$TEMP_SCRIPT"
+printf "%s\n" "    if [ -f \"\$json_file\" ]; then" >> "$TEMP_SCRIPT"
+printf "%s\n" "        filename=\$(basename \"\$json_file\" .json)" >> "$TEMP_SCRIPT"
+printf "%s\n" "        output_file=\"$DEVICE_OUTPUT_DIR/\$filename.txt\"" >> "$TEMP_SCRIPT"
+printf "%s\n" "        " >> "$TEMP_SCRIPT"
+printf "%s\n" "        echo \"正在处理: \$filename\"" >> "$TEMP_SCRIPT"
+printf "%s\n" "        echo \"  输入文件: \$json_file\"" >> "$TEMP_SCRIPT"
+printf "%s\n" "        echo \"  输出文件: \$output_file\"" >> "$TEMP_SCRIPT"
+printf "%s\n" "        " >> "$TEMP_SCRIPT"
+printf "%s\n" "        # 使用绝对路径执行" >> "$TEMP_SCRIPT"
+printf "%s\n" "        \"\$QWEN3_ABS_PATH\" \"\$json_file\" > \"\$output_file\" 2>&1 || {" >> "$TEMP_SCRIPT"
+printf "%s\n" "            echo \"  警告: \$filename 处理失败\"" >> "$TEMP_SCRIPT"
+printf "%s\n" "        }" >> "$TEMP_SCRIPT"
+printf "%s\n" "    fi" >> "$TEMP_SCRIPT"
+printf "%s\n" "done" >> "$TEMP_SCRIPT"
+printf "%s\n" "" >> "$TEMP_SCRIPT"
+printf "%s\n" "echo \"推理完成\"" >> "$TEMP_SCRIPT"
+
+# 发送脚本到设备
+hdc -s 100.103.109.221:8710 file send "$TEMP_SCRIPT" /data/qwen3/qwen3_script.sh
+
+# 在设备上执行脚本（非交互模式）
+hdc -s 100.103.109.221:8710 shell "chmod +x /data/qwen3/qwen3_script.sh && /data/qwen3/qwen3_script.sh"
+
+# 清理
+rm -f "$TEMP_SCRIPT"
+hdc -s 100.103.109.221:8710 shell "rm -f /data/qwen3/qwen3_script.sh" 2>/dev/null || true
 
 # 6. 回收输出文件（只在当前目录查找）
 echo ""
@@ -128,7 +140,7 @@ for json_file in "$LOCAL_INPUT_DIR"/*.json; do
         local_path="$LOCAL_OUTPUT_DIR/$output_file"
         
         echo "  回收: $output_file"
-        hdcrecv "$device_path" "$local_path"
+        hdc -s 100.103.109.221:8710 file recv "$device_path" "$local_path"
         has_json_files=1
     fi
 done
@@ -141,7 +153,7 @@ fi
 read -p "是否清理设备上的测试文件？(y/N): " clean_confirm
 if [[ "$clean_confirm" =~ ^[Yy]$ ]]; then
     echo "清理设备上的测试文件..."
-    shhdc shell "rm -f $DEVICE_TEST_DIR/*.json && rm -f $DEVICE_OUTPUT_DIR/*.txt"
+    hdc -s 100.103.109.221:8710 shell "rm -f $DEVICE_TEST_DIR/*.json && rm -f $DEVICE_OUTPUT_DIR/*.txt"
 fi
 
 echo ""
