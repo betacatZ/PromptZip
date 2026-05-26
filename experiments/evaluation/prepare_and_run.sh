@@ -1,5 +1,6 @@
 
-#!/bin/bash
+#!/usr/bin/env bash
+# 兼容 zsh 和 bash
 
 # ================================================
 # 端侧推理自动化脚本
@@ -10,6 +11,11 @@
 # ================================================
 
 set -e
+
+# 设置 shell 兼容性选项（对于 zsh）
+if [ -n "$ZSH_VERSION" ]; then
+    setopt NO_NOMATCH  # 在无匹配文件时不报错
+fi
 
 # 配置（请根据实际情况修改）
 LOCAL_INPUT_DIR="./outputs"              # 本地包含 JSON 文件的目录
@@ -54,11 +60,6 @@ if [ ! -d "$LOCAL_INPUT_DIR" ]; then
     exit 1
 fi
 
-json_files=$(ls "$LOCAL_INPUT_DIR"/*.json 2>/dev/null | wc -l)
-if [ "$json_files" -eq 0 ]; then
-    echo "警告: 在 $LOCAL_INPUT_DIR 中没有找到 JSON 文件"
-fi
-
 # 2. 准备本地输出目录
 mkdir -p "$LOCAL_OUTPUT_DIR"
 
@@ -66,16 +67,23 @@ mkdir -p "$LOCAL_OUTPUT_DIR"
 echo "在设备上创建目录..."
 shhdc shell "mkdir -p $DEVICE_TEST_DIR && mkdir -p $DEVICE_OUTPUT_DIR"
 
-# 4. 发送所有 JSON 文件到设备（递归查找子文件夹）
+# 4. 发送所有 JSON 文件到设备（只在当前目录查找）
 echo "发送 JSON 文件到设备..."
-# 使用 find 命令递归查找所有 .json 文件
-while IFS= read -r -d '' json_file; do
-    if [ -f "$json_file" ]; then
+# 兼容 zsh 和 bash 的方式检查和遍历
+has_json_files=0
+for json_file in "$LOCAL_INPUT_DIR"/*.json; do
+    # 检查是否真的存在文件（处理通配符没有匹配的情况）
+    if [ -e "$json_file" ]; then
         filename=$(basename "$json_file")
-        echo "  发送: $filename (来自: ${json_file#$LOCAL_INPUT_DIR/})"
+        echo "  发送: $filename"
         hdcsend "$json_file" "$DEVICE_TEST_DIR/$filename"
+        has_json_files=1
     fi
-done < <(find "$LOCAL_INPUT_DIR" -name "*.json" -type f -print0)
+done
+
+if [ "$has_json_files" -eq 0 ]; then
+    echo "  警告: 在 $LOCAL_INPUT_DIR 中没有找到 JSON 文件"
+fi
 
 # 5. 在设备上运行推理
 echo ""
@@ -106,12 +114,14 @@ shhdc shell << EOF
     echo "推理完成"
 EOF
 
-# 6. 回收输出文件（递归查找子文件夹）
+# 6. 回收输出文件（只在当前目录查找）
 echo ""
 echo "回收输出文件..."
-# 使用 find 命令递归查找所有 .json 文件
-while IFS= read -r -d '' json_file; do
-    if [ -f "$json_file" ]; then
+# 兼容 zsh 和 bash 的方式检查和遍历
+has_json_files=0
+for json_file in "$LOCAL_INPUT_DIR"/*.json; do
+    # 检查是否真的存在文件（处理通配符没有匹配的情况）
+    if [ -e "$json_file" ]; then
         filename=$(basename "$json_file" .json)
         output_file="$filename.txt"
         device_path="$DEVICE_OUTPUT_DIR/$output_file"
@@ -119,8 +129,13 @@ while IFS= read -r -d '' json_file; do
         
         echo "  回收: $output_file"
         hdcrecv "$device_path" "$local_path"
+        has_json_files=1
     fi
-done < <(find "$LOCAL_INPUT_DIR" -name "*.json" -type f -print0)
+done
+
+if [ "$has_json_files" -eq 0 ]; then
+    echo "  警告: 在 $LOCAL_INPUT_DIR 中没有找到 JSON 文件"
+fi
 
 # 7. 清理设备上的测试文件（可选）
 read -p "是否清理设备上的测试文件？(y/N): " clean_confirm
