@@ -1,3 +1,4 @@
+
 import argparse
 import json
 import os
@@ -78,21 +79,49 @@ def save_inference_json(output_dir, sample_id, chunk_idx, text_messages, json_te
         text_messages: text字段内容
         json_template: JSON模板
     """
-    # 创建输出目录
-    sample_dir = os.path.join(output_dir, str(sample_id))
-    os.makedirs(sample_dir, exist_ok=True)
+    # 直接在输出目录中创建文件，使用清晰的命名方式，便于后续解析
+    # 文件名格式：sample_{sample_id}_chunk_{chunk_idx}.json
+    os.makedirs(output_dir, exist_ok=True)
 
     # 创建完整的JSON
     inference_json = dict(json_template)
     inference_json["text"] = text_messages
 
-    # 保存文件
-    output_file = os.path.join(sample_dir, f"{chunk_idx}.json")
+    # 保存文件，使用清晰的命名格式
+    output_file = os.path.join(output_dir, f"sample_{sample_id}_chunk_{chunk_idx}.json")
     with open(output_file, "w", encoding="utf-8") as f:
         json.dump(inference_json, f, ensure_ascii=False, indent=4)
 
 
-def process_sample(sample, compressor, chunk_size, json_template, output_dir):
+def save_sample_chunks(output_dir, sample_id, dataset, instruction, query, chunks):
+    """
+    保存样本的 chunks 信息，便于后续 GPU 推理和对比
+
+    Args:
+        output_dir: 输出目录
+        sample_id: 样本ID
+        dataset: 数据集名称
+        instruction: 指令
+        query: 查询
+        chunks: 文本块列表
+    """
+    inputs_dir = os.path.join(output_dir, "inputs")
+    os.makedirs(inputs_dir, exist_ok=True)
+    
+    chunk_info = {
+        "sample_id": sample_id,
+        "dataset": dataset,
+        "instruction": instruction,
+        "query": query,
+        "chunks": chunks
+    }
+    
+    output_file = os.path.join(inputs_dir, f"{sample_id}_chunks.json")
+    with open(output_file, "w", encoding="utf-8") as f:
+        json.dump(chunk_info, f, ensure_ascii=False, indent=2)
+
+
+def process_sample(sample, compressor, chunk_size, json_template, output_dir, save_chunks=True):
     """
     处理单个样本，切分文本并生成推理JSON
 
@@ -102,6 +131,7 @@ def process_sample(sample, compressor, chunk_size, json_template, output_dir):
         chunk_size: 块大小
         json_template: JSON模板
         output_dir: 输出目录
+        save_chunks: 是否保存 chunks 信息用于后续对比
     """
     context = sample.get("context", "")
     query = sample.get("input", "")
@@ -113,6 +143,10 @@ def process_sample(sample, compressor, chunk_size, json_template, output_dir):
 
     # 切分文本
     chunks = compressor._chunk_context(context, compressor.chunk_end_tokens, chunk_size)
+    
+    # 保存 chunks 信息（如果需要）
+    if save_chunks:
+        save_sample_chunks(output_dir, _id, dataset, instruction, query, chunks)
 
     # 为每个chunk生成一个JSON文件
     for chunk_idx, chunk in enumerate(chunks):
@@ -147,6 +181,7 @@ def main():
         "--params_path", type=str, default="/data/qwen3/qwen3-reranker-0.6b/Q4_N_0_G128/params", help="参数路径"
     )
     parser.add_argument("--max_ctx", type=int, default=512, help="最大上下文")
+    parser.add_argument("--save_chunks", action="store_true", default=True, help="保存 chunks 信息用于后续对比")
 
     args = parser.parse_args()
 
@@ -218,6 +253,7 @@ def main():
                 chunk_size=args.chunk_size,
                 json_template=json_template,
                 output_dir=args.output_dir,
+                save_chunks=args.save_chunks,
             )
             total_chunks += n_chunks
         except Exception as e:
@@ -229,3 +265,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
