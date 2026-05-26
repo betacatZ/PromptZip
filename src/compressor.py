@@ -31,7 +31,7 @@ import sys
 from optimum.onnxruntime import ORTModelForTokenClassification
 
 sys.path.append(os.path.abspath(os.path.join(os.getcwd(), "../src")))
-from util import (
+from .util import (
     TokenClfDataset,
     get_pure_token,
     is_begin_of_new_word,
@@ -40,6 +40,7 @@ from util import (
     replace_added_token,
     seed_everything,
 )
+
 
 class BaseCompressor(ABC):
     def __init__(self, name: str = "BaseCompressor"):
@@ -476,6 +477,8 @@ class RerankCompressor(BaseCompressor):
         super().__init__("RerankCompressor")
         self.tokenizer = AutoTokenizer.from_pretrained(model_name, padding_side="left")
         self.engine = engine
+        self.prefix = '<|im_start|>system\nJudge whether the Document meets the requirements based on the Query and the Instruct provided. Note that the answer can only be "yes" or "no".<|im_end|>\n<|im_start|>user\n'
+        self.suffix = "<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n"
         if engine == "hf":
             self.model = AutoModelForCausalLM.from_pretrained(
                 model_name,
@@ -511,9 +514,6 @@ class RerankCompressor(BaseCompressor):
 
         self.token_false_id = self.tokenizer.convert_tokens_to_ids("no")
         self.token_true_id = self.tokenizer.convert_tokens_to_ids("yes")
-
-        self.prefix = '<|im_start|>system\nJudge whether the Document meets the requirements based on the Query and the Instruct provided. Note that the answer can only be "yes" or "no".<|im_end|>\n<|im_start|>user\n'
-        self.suffix = "<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n"
 
     def _chunk_context(self, origin_text, chunk_end_tokens, chunk_size):
         """把一段长文本 origin_text 按最大长度 chunk_size 切分成多个 chunk，
@@ -674,6 +674,8 @@ class RerankCompressor(BaseCompressor):
 
         batch_size = 32
         scores = []
+        representations = []
+        need_representations = self.engine == "hf"
 
         for i in range(0, len(chunks), batch_size):
             batch_chunks = chunks[i : i + batch_size]
@@ -683,7 +685,50 @@ class RerankCompressor(BaseCompressor):
                 batch_inputs = self.process_inputs(batch_pairs)
 
                 with torch.no_grad():
-                    batch_scores = self.compute_logits(batch_inputs)
+                    if need_representations:
+                        # 同时计算 scores 和 representations
+                        outputs = self.model(**batch_inputs, output_hidden_states=True)
+                        last_hidden_state = outputs.hidden_states[-1]
+
+                        # 计算 scores
+                        batch_scores = outputs.logits[:, -1, :]
+                        true_vector = batch_scores[:, self.token_true_id]
+                        false_vector = batch_scores[:, self.token_false_id]
+                        batch_scores = torch.stack([false_vector, true_vector], dim=1)
+                        batch_scores = torch.nn.functional.log_softmax(batch_scores, dim=1)
+                        batch_scores = batch_scores[:, 1].exp().tolist()
+
+                        # 计算 representations - 只对chunk部分进行mean pooling
+                        # 需要找到每个chunk在完整序列中的位置
+                        # 先tokenize chunk部分，获取长度
+                        chunk_inputs = self.tokenizer(
+                            batch_chunks, add_special_tokens=False, return_attention_mask=False, return_length=True
+                        )
+                        chunk_lengths = chunk_inputs["length"]
+
+                        # 计算每个chunk在完整序列中的结束位置（即prefix+instruction+query+chunk的结束）
+                        batch_reps = []
+                        for j in range(len(batch_chunks)):
+                            full_length = batch_inputs["attention_mask"][j].sum().item()
+                            chunk_len = chunk_lengths[j]
+                            start_pos = max(0, full_length - chunk_len - len(self.suffix_tokens))
+                            end_pos = full_length - len(self.suffix_tokens)
+
+                            if start_pos < end_pos:
+                                chunk_hidden = last_hidden_state[j, start_pos:end_pos, :]
+                                chunk_mask = batch_inputs["attention_mask"][j, start_pos:end_pos].unsqueeze(-1)
+                                pooled_embedding = torch.sum(chunk_hidden * chunk_mask, dim=0) / torch.clamp(
+                                    chunk_mask.sum(), min=1e-9
+                                )
+                            else:
+                                pooled_embedding = torch.zeros_like(last_hidden_state[j, 0, :])
+                            batch_reps.append(pooled_embedding.unsqueeze(0))
+
+                        batch_reps = torch.cat(batch_reps, dim=0)
+                        batch_reps = torch.nn.functional.normalize(batch_reps, p=2, dim=1)
+                        representations.append(batch_reps)
+                    else:
+                        batch_scores = self.compute_logits(batch_inputs)
 
                 scores.extend(batch_scores)
                 if torch.cuda.is_available():
@@ -713,13 +758,11 @@ class RerankCompressor(BaseCompressor):
                 batch_scores = [output.outputs.score for output in outputs]
                 scores.extend(batch_scores)
 
+        if need_representations:
+            representations = torch.cat(representations, dim=0)
+
         if selection_mode == "topk":
             k = max(1, int(len(chunks) * rate))
-            # topk_indices = sorted(sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)[: k - 2])
-            # selected_indices = topk_indices + [0, len(chunks) - 1]
-            # selected_indices = sorted(set(selected_indices))
-            # selected_chunks = [chunks[i] for i in selected_indices]
-
             n = len(chunks)
             k = max(1, int(n * rate))
             # 1/3 uniform
@@ -733,6 +776,11 @@ class RerankCompressor(BaseCompressor):
             remaining_indices = [i for i in range(n) if i not in selected]
             topk_imp = sorted(sorted(remaining_indices, key=lambda i: scores[i], reverse=True)[:k_imp])
             selected_indices = sorted(selected.union(topk_imp).union({0, n - 1}))
+            selected_chunks = [chunks[i] for i in selected_indices]
+        elif selection_mode == "mmr" and self.engine == "hf":
+            n = len(chunks)
+            k = max(1, int(n * rate))
+            selected_indices = self.select_chunks_by_mmr(chunks, representations, scores, k)
             selected_chunks = [chunks[i] for i in selected_indices]
 
         elif selection_mode == "topp":
@@ -994,6 +1042,49 @@ class RerankCompressor(BaseCompressor):
 
         return scores
 
+    def select_chunks_by_mmr(self, chunks, representations, scores, k):
+        """
+        基于chunk相似度进行选择，平衡相关性和多样性
+        1. 先保留首尾
+        2. 然后通过MMR在相关性（relevance）与多样性（diversity）之间进行平衡。
+        """
+        n = len(chunks)
+        if n <= k:
+            return list(range(n))
+        # Step 1: 先选首尾
+        selected = set()
+        if n > 0:
+            selected.add(0)
+        if n > 1:
+            selected.add(n - 1)
+
+        # Step 2: 使用贪婪算法选择剩余的chunk，MMR平衡相关性和多样性
+        remaining = list(set(range(n)) - selected)
+        similarity_matrix = representations @ representations.T
+
+        while len(selected) < k and remaining:
+            best_idx = None
+            best_score = -float("inf")
+            for idx in remaining:
+                rel_score = scores[idx]
+                if selected:
+                    sim_scores = [similarity_matrix[idx, s].item() for s in selected]
+                    max_sim = max(sim_scores)
+                    div_score = 1.0 - max_sim
+                else:
+                    div_score = 1.0
+                combined_score = 0.6 * rel_score + 0.4 * div_score
+
+                if combined_score > best_score:
+                    best_score = combined_score
+                    best_idx = idx
+
+            if best_idx is not None:
+                selected.add(best_idx)
+                remaining.remove(best_idx)
+
+        return sorted(selected)
+
 
 class EmbeddingCompressor(BaseCompressor):
     def __init__(
@@ -1035,7 +1126,7 @@ class EmbeddingCompressor(BaseCompressor):
             chunk_end_tokens = self.chunk_end_tokens
             chunks = self._chunk_context(doc, chunk_end_tokens, chunk_size)
 
-        batch_size = 16
+        batch_size = 32
         queries = [self.get_detailed_instruct(instruction, query)]
         n = len(chunks)
         k = max(1, int(n * rate))
@@ -1043,6 +1134,7 @@ class EmbeddingCompressor(BaseCompressor):
         k_uni = max(1, k // 3)
         k_uni = min(k_uni, n)
         k_imp = k - k_uni
+        k_uni = k_uni - 2
         chunk_emb_batches = []
 
         query_batch = self.tokenizer(
