@@ -709,10 +709,11 @@ class RerankCompressor(BaseCompressor):
                         # 计算每个chunk在完整序列中的结束位置（即prefix+instruction+query+chunk的结束）
                         batch_reps = []
                         for j in range(len(batch_chunks)):
-                            full_length = batch_inputs["attention_mask"][j].sum().item()
                             chunk_len = chunk_lengths[j]
-                            start_pos = max(0, full_length - chunk_len - len(self.suffix_tokens))
-                            end_pos = full_length - len(self.suffix_tokens)
+                            valid_pos = batch_inputs["attention_mask"][j].nonzero(as_tuple=True)[0]
+                            real_end = valid_pos.item() + 1
+                            end_pos = real_end - len(self.suffix_tokens)  # 去掉 suffix 的长度
+                            start_pos = end_pos - chunk_len  # chunk 的开始位置
 
                             if start_pos < end_pos:
                                 chunk_hidden = last_hidden_state[j, start_pos:end_pos, :]
