@@ -711,7 +711,7 @@ class RerankCompressor(BaseCompressor):
                         for j in range(len(batch_chunks)):
                             chunk_len = chunk_lengths[j]
                             valid_pos = batch_inputs["attention_mask"][j].nonzero(as_tuple=True)[0]
-                            real_end = valid_pos.item() + 1
+                            real_end = valid_pos[-1].item() + 1
                             end_pos = real_end - len(self.suffix_tokens)  # 去掉 suffix 的长度
                             start_pos = end_pos - chunk_len  # chunk 的开始位置
 
