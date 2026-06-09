@@ -29,6 +29,7 @@ import numpy as np
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from eval_longbench import (
+    dataset2metric,
     scorer,
     write_score,
 )
@@ -158,10 +159,12 @@ def load_ground_truth_from_jsonl(dataset_dir):
         print(f"警告: 数据集目录不存在: {dataset_dir}")
         return ground_truth
 
-    jsonl_files = [f for f in os.listdir(dataset_dir) if f.endswith(".jsonl")]
+    # 只加载 eval_longbench.py 中 dataset2metric 定义的数据集，即 {task}.jsonl
+    valid_tasks = list(dataset2metric.keys())
+    jsonl_files = [f"{task}.jsonl" for task in valid_tasks if os.path.isfile(os.path.join(dataset_dir, f"{task}.jsonl"))]
 
     if not jsonl_files:
-        print(f"警告: 数据集目录中没有 .jsonl 文件: {dataset_dir}")
+        print(f"警告: 数据集目录中没有匹配的 .jsonl 文件: {dataset_dir}")
         return ground_truth
 
     print(f"  加载 {len(jsonl_files)} 个 JSONL 数据集文件...")
