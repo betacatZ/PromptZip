@@ -528,8 +528,8 @@ def build_chunk_json_template(args):
 def build_baseline_json_template(args):
     """构建baseline模式（LLM问答）的JSON模板"""
     return {
-        "tokenizer": {"model_path": args.baseline_tokenizer_path},
-        "params_path": args.baseline_params_path,
+        "tokenizer": {"model_path": args.tokenizer_path},
+        "params_path": args.params_path,
         "hparams": {
             "n_vocab": 152064,
             "n_embed": 3584,
@@ -577,28 +577,14 @@ def main():
     parser.add_argument("--mode", type=str, choices=["chunk", "baseline"], default="chunk",
         help="运行模式：chunk=切分文档后逐块推理(reranker)；baseline=传入完整文档(LLM问答)，用于基线测试")
 
-    # chunk模式参数
-    parser.add_argument("--model_name", type=str, default="Qwen/Qwen3-Reranker-0.6B", help="模型名称（chunk模式用reranker，baseline模式用LLM）")
+    parser.add_argument("--model_name", type=str, default="Qwen/Qwen3-Reranker-0.6B",
+        help="模型名称（chunk模式用reranker，baseline模式用LLM）")
     parser.add_argument("--chunk_size", type=int, default=256, help="块大小（仅chunk模式生效）")
     parser.add_argument("--device", type=str, default="cpu", help="设备 (cpu/cuda)")
-    parser.add_argument("--tokenizer_path", type=str,
-        default="/data/qwen3/qwen3-reranker-0.6b/Q4_N_0_G128/tokenizer.json",
-        help="tokenizer路径（chunk模式）")
-    parser.add_argument("--params_path", type=str,
-        default="/data/qwen3/qwen3-reranker-0.6b/Q4_N_0_G128/params",
-        help="参数路径（chunk模式）")
-
-    # baseline模式参数
-    parser.add_argument("--baseline_model_name", type=str, default="Qwen/Qwen2.5-7B-Instruct",
-        help="baseline模式的LLM模型名称，用于tokenizer截断")
-    parser.add_argument("--baseline_tokenizer_path", type=str,
-        default="/data2/llm/qwen2.5-7b-instruct/Q4_0/tokenizer.json",
-        help="tokenizer路径（baseline模式）")
-    parser.add_argument("--baseline_params_path", type=str,
-        default="/data2/llm/qwen2.5-7b-instruct/Q4_0/params",
-        help="参数路径（baseline模式）")
-
-    # 共用参数
+    parser.add_argument("--tokenizer_path", type=str, required=True,
+        help="tokenizer路径")
+    parser.add_argument("--params_path", type=str, required=True,
+        help="参数路径")
     parser.add_argument("--max_ctx", type=int, default=512, help="最大上下文token数")
     parser.add_argument("--save_chunks", action="store_true", help="保存 chunks/baseline 信息用于后续对比")
 
@@ -622,7 +608,7 @@ def main():
         )
     elif args.mode == "baseline":
         print("正在初始化 tokenizer（baseline模式用于截断超长文档）...")
-        tokenizer = AutoTokenizer.from_pretrained(args.baseline_model_name)
+        tokenizer = AutoTokenizer.from_pretrained(args.model_name)
 
     # 读取输入样本
     print(f"正在读取输入文件: {args.input_file}")
