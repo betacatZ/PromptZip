@@ -1,6 +1,6 @@
 .trae/
 .vscode/
-*output*/
+**/*output*/
 
 **/config/
 onnx/
