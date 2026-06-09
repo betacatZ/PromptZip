@@ -101,46 +101,35 @@ dataset2metric = {
 #     "repobench-p": "Please complete the code given below. \n{context}{input}Next line of code:\n",
 # }
 
+
 dataset2prompt = {
     "narrativeqa": [
         {
             "role": "system",
-            "content": "You are an assistant that answers questions based on a story (novel or movie script).",
+            "content": "You are a helpful assistant. You are given a story, which can be either a novel or a movie script, and a question. Answer the question as concisely as you can, using a single phrase if possible. Do not provide any explanation.",
         },
-        {
-            "role": "user",
-            "content": "<Story>\n{context}\n</Story>\n\n<Question>\n{input}\n</Question>\n\n<Instruction>\nAnswer the question as concisely as possible, using a single phrase if possible. Do not provide any explanation.\n</Instruction>",
-        },
+        {"role": "user", "content": "<content>{context}</content>\n\nQuestion: {input}"},
     ],
     "qasper": [
         {
             "role": "system",
-            "content": "You are a helpful assistant. Answer questions based on a scientific article.",
+            "content": 'You are a scientific assistant. Answer the question based on the article. If the question cannot be answered, write "unanswerable". For yes/no questions, respond with "yes", "no", or "unanswerable". Do not provide any explanations.',
         },
-        {
-            "role": "user",
-            "content": '<Article>\n{context}\n</Article>\n\n<Question>\n{input}\n</Question>\n\n<Instruction>\nAnswer as concisely as possible.\n- If unanswerable, output: "unanswerable".\n- If yes/no, output: "yes", "no", or "unanswerable".\nDo not provide any explanation.\n</Instruction>',
-        },
+        {"role": "user", "content": "<content>{context}</content>\n\nQuestion: {input}"},
     ],
     "multifieldqa_en": [
         {
             "role": "system",
-            "content": "You are a helpful assistant. Answer questions based on a given text.",
+            "content": "You are a helpful assistant. Answer the question based on the given text. Only provide the answer and do not give any additional words.",
         },
-        {
-            "role": "user",
-            "content": "<Text>\n{context}\n</Text>\n\n<Question>\n{input}\n</Question>\n\n<Instruction>\nGive a brief answer. Only output the answer and nothing else.\n</Instruction>",
-        },
+        {"role": "user", "content": "<content>{context}</content>\n\nQuestion: {input}"},
     ],
     "multifieldqa_zh": [
         {
             "role": "system",
-            "content": "你是一个根据给定文本回答问题的助手，你需要根据给定的文本回答问题。请用中文给出简短答案。只输出答案，不要包含任何解释或多余内容。",
+            "content": "你是一个中文问答助手。请根据文章简洁地回答问题，只提供答案，不要额外解释。",
         },
-        {
-            "role": "user",
-            "content": "<文本>\n{context}\n</文本>\n\n<问题>\n{input}\n</问题>\n\n<要求>\n请用中文简短作答，只输出答案，不要输出任何多余内容。\n</要求>",
-        },
+        {"role": "user", "content": "<content>{context}</content>\n\n问题：{input}"},
     ],
     "hotpotqa": [
         {
@@ -149,7 +138,7 @@ dataset2prompt = {
         },
         {
             "role": "user",
-            "content": "<Passages>\n{context}\n</Passages>\n\n<Question>\n{input}\n</Question>\n\n<Instruction>\nAnswer the question using only the information in the passages. Output only the final answer with no explanation or extra words.\n</Instruction>",
+            "content": "The following are the given passages:\n<content>{context}</content>\n\nAnswer the question based on the given passages. Only give me the answer and do not output any other words.\n\nQuestion: {input}",
         },
     ],
     "2wikimqa": [
@@ -159,17 +148,17 @@ dataset2prompt = {
         },
         {
             "role": "user",
-            "content": "<Passages>\n{context}\n</Passages>\n\n<Question>\n{input}\n</Question>\n\n<Instruction>\nAnswer using only the given passages. Output only the final answer without explanation.\n</Instruction>",
+            "content": "The following are the given passages:\n<content>{context}</content>\n\nAnswer the question based on the given passages. Only give me the answer and do not output any other words.\n\nQuestion: {input}",
         },
     ],
     "musique": [
         {
             "role": "system",
-            "content": "You are a helpful assistant. Answer the question based on the given passages. Only give me the answer and do not output any other words.",
+            "content": "You are a helpful assistant. Answer the question based on the given passages. Only give me the answer and do not output any other words..",
         },
         {
             "role": "user",
-            "content": "<Passages>\n{context}\n</Passages>\n\n<Question>\n{input}\n</Question>\n\n<Instruction>\nAnswer using only the provided passages. Only output the final answer without any explanation.\n</Instruction>",
+            "content": "The following are the given passages:\n<content>{context}</content>\n\nAnswer the question based on the given passages. Only give me the answer and do not output any other words.\n\nQuestion: {input}",
         },
     ],
     "dureader": [
@@ -177,85 +166,70 @@ dataset2prompt = {
             "role": "system",
             "content": "你是一个中文问答助手。请根据给定文章回答问题。只给出答案，不要解释。",
         },
-        {
-            "role": "user",
-            "content": "<文章>\n{context}\n</文章>\n\n<问题>\n{input}\n</问题>\n\n<要求>\n请仅根据文章内容回答问题，只输出最终答案，不要解释或添加任何多余内容。\n</要求>",
-        },
+        {"role": "user", "content": "<content>{context}</content>\n\n问题：{input}"},
     ],
     "gov_report": [
         {
             "role": "system",
-            "content": "You are an assistant that summarizes government reports.",
+            "content": "You are a helpful assistant. You are given a report by a government agency. Write a one-page summary of the report.",
         },
-        {
-            "role": "user",
-            "content": "<Report>\n{context}\n</Report>\n\n<Instruction>\nWrite a concise one-page summary of the report. Focus on key points, findings, and conclusions. Do not include any extra commentary.\n</Instruction>",
-        },
+        {"role": "user", "content": "<content>{context}</content>\n\nSummary:"},
     ],
     "qmsum": [
         {
             "role": "system",
-            "content": "You are an assistant that answers questions based on meeting transcripts.",
+            "content": "You are a helpful assistant. Answer the query based on the meeting transcript in one or more sentences.",
         },
-        {
-            "role": "user",
-            "content": "<Transcript>\n{context}\n</Transcript>\n\n<Query>\n{input}\n</Query>\n\n<Instruction>\nAnswer the query in one or more concise sentences based only on the transcript.\n</Instruction>",
-        },
+        {"role": "user", "content": "<content>{context}</content>\n\nQuery: {input}"},
     ],
     "multi_news": [
         {
             "role": "system",
-            "content": "You are an assistant that summarizes multiple news articles.",
+            "content": "You are a helpful assistant. Read the news passages and write a one-page summary. Do not provide additional explanations.",
         },
-        {
-            "role": "user",
-            "content": "<NewsArticles>\n{context}\n</NewsArticles>\n\n<Instruction>\nWrite a concise one-page summary covering the key events and main points across all articles. Do not include any extra commentary.\n</Instruction>",
-        },
+        {"role": "user", "content": "<content>{context}</content>\n\nPlease provide the summary below."},
     ],
     "vcsum": [
         {
             "role": "system",
-            "content": "你是一个用于总结会议记录的助手。",
+            "content": "你是会议总结助手。请根据会议记录写一段总结，不要解释。",
         },
-        {
-            "role": "user",
-            "content": "<会议记录>\n{context}\n</会议记录>\n\n<要求>\n请对会议内容进行简要总结，概括主要讨论内容和结论。\n</要求>",
-        },
+        {"role": "user", "content": "<content>{context}</content>\n\n会议总结："},
     ],
     "trec": [
         {
             "role": "system",
             "content": "You are a classification assistant. Determine the type of the question based on the given examples. Only output the type/category.",
         },
-        {"role": "user", "content": "{context}\n\nQuestion: {input}"},
+        {"role": "user", "content": "<content>{context}</content>\n\nQuestion: {input}"},
     ],
     "triviaqa": [
         {
             "role": "system",
             "content": "You are a helpful assistant. Answer the question based on the given passage. Only give the answer and do not output any other words.",
         },
-        {"role": "user", "content": "{context}\n\n{input}"},
+        {"role": "user", "content": "<content>{context}</content>\n\n{input}"},
     ],
     "samsum": [
         {
             "role": "system",
             "content": "You are a helpful assistant. Summarize the dialogue into a few short sentences. Do not provide explanations or extra words.",
         },
-        {"role": "user", "content": "{context}\n\n{input}"},
+        {"role": "user", "content": "<content>{context}</content>\n\n{input}"},
     ],
     "lsht": [
         {
             "role": "system",
             "content": "你是中文分类助手。根据给定的新闻内容，判断新闻的类别。只输出类别名称。",
         },
-        {"role": "user", "content": "{context}\n\n{input}"},
+        {"role": "user", "content": "<content>{context}</content>\n\n{input}"},
     ],
     "passage_count": [
         {
             "role": "system",
             "content": "You are a helpful assistant. Count how many unique paragraphs there are in the given set of paragraphs after removing duplicates. Only output the number.",
         },
-        {"role": "user", "content": "{context}"},
+        {"role": "user", "content": "<content>{context}</content>"},
     ],
     "passage_retrieval_en": [
         {
@@ -308,6 +282,21 @@ INSTRUCTION = {
     "vcsum": "检索与会议总结相关的重要内容。",
 }
 
+INSTRUCTION = {
+    "narrativeqa": "Find passages that answer the question.",
+    "qasper": "Find passages that answer the question.",
+    "multifieldqa_en": "Find passages that answer the question.",
+    "multifieldqa_zh": "检索有助于回答问题的相关内容。",
+    "hotpotqa": "Find passages that provide evidence useful for answering the question.",
+    "2wikimqa": "Find passages that provide evidence useful for answering the question.",
+    "musique": "Find passages that support multi-hop reasoning for the question.",
+    "dureader": "检索有助于回答问题的相关内容。",
+    "gov_report": "Find passages containing important information for summarization.",
+    "qmsum": "Find transcript segments relevant to the query.",
+    "multi_news": "Find passages containing key information for summarization.",
+    "vcsum": "检索与会议总结相关的重要内容。",
+}
+
 # dataset2prompt = {
 #     "narrativeqa": "<|im_start|>system\nYou are a helpful assistant. You are given a story, which can be either a novel or a movie script, and a question. Answer the question as concisely as you can, using a single phrase if possible. Do not provide any explanation.\n<|im_end|>\n\n<|im_start|>user\n<context>\n{context}\n</context>\n\nQuestion: {input}\n<|im_end|>\n\n<|im_start|>assistant\n",
 #     "qasper": "<|im_start|>system\nYou are a scientific assistant. Answer the question based on the article. If the question cannot be answered, write 'unanswerable'. For yes/no questions, respond with 'yes', 'no', or 'unanswerable'. Do not provide any explanations.\n<|im_end|>\n\n<|im_start|>user\n<context>\n{context}\n</context>\n\nQuestion: {input}\n<|im_end|>\n\n<|im_start|>assistant\n",
@@ -332,9 +321,9 @@ INSTRUCTION = {
 #     "repobench-p": "<|im_start|>system\nYou are a coding assistant. Complete the code below accurately based on the context. Only output the next line of code without explanation.\n<|im_end|>\n\n<|im_start|>user\n{context}{input}\nNext line of code:\n<|im_end|>\n\n<|im_start|>assistant\n",
 # }
 QUERY = {
-    "gov_report": """Identify passages that contain key findings, policy conclusions, major facts, and important statistics that are essential for writing a comprehensive summary of a government report.""",
+    "gov_report": """What are the key findings, conclusions, and statistics in this government report?""",
     "multi_news": """Select passages that contain the most important events, key facts, main actors,and outcomes needed to write a comprehensive summary of multiple news articles.""",
-    "vcsum": """请找出会议记录中包含关键信息的段落，例如：会议讨论的主要议题、重要决策、关键观点和结论，这些信息将用于生成会议总结。""",
+    "vcsum": """这段会议记录是否包含会议讨论的议题、重要观点、决策或结论？""",
 }
 
 QUESTIONS = {
