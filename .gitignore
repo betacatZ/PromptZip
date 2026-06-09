@@ -1,7 +1,7 @@
 .trae/
 .vscode/
 **/*output*/
-
+**/*dataset*/
 **/config/
 onnx/
 # Byte-compiled / optimized / DLL files
