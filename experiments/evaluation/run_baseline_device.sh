@@ -22,9 +22,10 @@ if [ -n "$ZSH_VERSION" ]; then
 fi
 
 # 配置（请根据实际情况修改）
-LOCAL_INPUT_DIR="/data8/zhangdeming/PromptZip/GEWU-baseline/test"      # 本地包含 baseline JSON 文件的目录
-DEVICE_QWEN_DIR="/data/qwen"                                          # 设备上 qwen 工作目录
-DEVICE_OUTPUT_DIR="/data/qwen/output/test"                             # 设备上的输出目录
+LOCAL_INPUT_DIR="/data8/zhangdeming/PromptZip/GEWU-dataset-baseline/test"      # 本地包含 baseline JSON 文件的目录
+DEVICE_QWEN_DIR="/data/qwen2"                                          # 设备上 qwen 工作目录
+DEVICE_TEST_DIR="/data/qwen2/test"                                      # 设备上的测试JSON目录
+DEVICE_OUTPUT_DIR="/data/qwen2/output/test"                             # 设备上的输出目录
 LOCAL_OUTPUT_DIR="/data8/zhangdeming/PromptZip/GEWU_output/baseline/test" # 本地回收文件的目录
 HDC_ADDR="100.103.109.221:8710"                                         # hdc 连接地址
 
@@ -67,16 +68,16 @@ mkdir -p "$LOCAL_OUTPUT_DIR"
 
 # 3. 在设备上创建输出目录
 echo "在设备上创建目录..."
-hdc -s "$HDC_ADDR" shell "mkdir -p $DEVICE_OUTPUT_DIR"
+hdc -s "$HDC_ADDR" shell "mkdir -p $DEVICE_TEST_DIR && mkdir -p $DEVICE_OUTPUT_DIR"
 
-# 4. 发送所有 baseline JSON 文件到设备的 qwen 工作目录
+# 4. 发送所有 baseline JSON 文件到设备的测试目录
 echo "发送 JSON 文件到设备..."
 has_json_files=0
 for json_file in "$LOCAL_INPUT_DIR"/*.json; do
     if [ -e "$json_file" ]; then
         filename=$(basename "$json_file")
         echo "  发送: $filename"
-        hdc -s "$HDC_ADDR" file send "$json_file" "$DEVICE_QWEN_DIR/$filename"
+        hdc -s "$HDC_ADDR" file send "$json_file" "$DEVICE_TEST_DIR/$filename"
         has_json_files=1
     fi
 done
@@ -103,7 +104,7 @@ printf "%s\n" "" >> "$TEMP_SCRIPT"
 printf "%s\n" "cd $DEVICE_QWEN_DIR" >> "$TEMP_SCRIPT"
 printf "%s\n" "" >> "$TEMP_SCRIPT"
 printf "%s\n" "# 遍历所有 baseline JSON 文件" >> "$TEMP_SCRIPT"
-printf "%s\n" "for json_file in $DEVICE_QWEN_DIR/*.json; do" >> "$TEMP_SCRIPT"
+printf "%s\n" "for json_file in $DEVICE_TEST_DIR/*.json; do" >> "$TEMP_SCRIPT"
 printf "%s\n" "    if [ -f \"\$json_file\" ]; then" >> "$TEMP_SCRIPT"
 printf "%s\n" "        filename=\$(basename \"\$json_file\")" >> "$TEMP_SCRIPT"
 printf "%s\n" "        stem=\$(basename \"\$json_file\" .json)" >> "$TEMP_SCRIPT"
@@ -111,30 +112,24 @@ printf "%s\n" "        output_file=\"$DEVICE_OUTPUT_DIR/\$stem.txt\"" >> "$TEMP_
 printf "%s\n" "        " >> "$TEMP_SCRIPT"
 printf "%s\n" "        echo \"正在处理: \$filename\"" >> "$TEMP_SCRIPT"
 printf "%s\n" "        " >> "$TEMP_SCRIPT"
-printf "%s\n" "        # 将当前JSON重命名为 qwen.json" >> "$TEMP_SCRIPT"
-printf "%s\n" "        cp \"\$json_file\" qwen.json" >> "$TEMP_SCRIPT"
-printf "%s\n" "        " >> "$TEMP_SCRIPT"
-printf "%s\n" "        # 执行推理" >> "$TEMP_SCRIPT"
-printf "%s\n" "        ./qwen ./qwen.json > \"\$output_file\" 2>&1 || {" >> "$TEMP_SCRIPT"
+printf "%s\n" "        # 执行推理，直接使用绝对路径" >> "$TEMP_SCRIPT"
+printf "%s\n" "        $DEVICE_QWEN_DIR/qwen2 \"\$json_file\" > \"\$output_file\" 2>&1 || {" >> "$TEMP_SCRIPT"
 printf "%s\n" "            echo \"  警告: \$filename 处理失败\"" >> "$TEMP_SCRIPT"
 printf "%s\n" "        }" >> "$TEMP_SCRIPT"
-printf "%s\n" "        " >> "$TEMP_SCRIPT"
-printf "%s\n" "        # 清理临时 qwen.json" >> "$TEMP_SCRIPT"
-printf "%s\n" "        rm -f qwen.json" >> "$TEMP_SCRIPT"
 printf "%s\n" "    fi" >> "$TEMP_SCRIPT"
 printf "%s\n" "done" >> "$TEMP_SCRIPT"
 printf "%s\n" "" >> "$TEMP_SCRIPT"
 printf "%s\n" "echo \"推理完成\"" >> "$TEMP_SCRIPT"
 
 # 发送脚本到设备
-hdc -s "$HDC_ADDR" file send "$TEMP_SCRIPT" /data/qwen/baseline_script.sh
+hdc -s "$HDC_ADDR" file send "$TEMP_SCRIPT" $DEVICE_QWEN_DIR/baseline_script.sh
 
 # 在设备上执行脚本
-hdc -s "$HDC_ADDR" shell "chmod +x /data/qwen/baseline_script.sh && /data/qwen/baseline_script.sh"
+hdc -s "$HDC_ADDR" shell "chmod +x $DEVICE_QWEN_DIR/baseline_script.sh && $DEVICE_QWEN_DIR/baseline_script.sh"
 
 # 清理
 rm -f "$TEMP_SCRIPT"
-hdc -s "$HDC_ADDR" shell "rm -f /data/qwen/baseline_script.sh" 2>/dev/null || true
+hdc -s "$HDC_ADDR" shell "rm -f $DEVICE_QWEN_DIR/baseline_script.sh" 2>/dev/null || true
 
 # 6. 回收输出文件
 echo ""
