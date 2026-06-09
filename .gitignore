@@ -1,4 +1,7 @@
-output/
+.trae/
+.vscode/
+*output*/
+
 **/config/
 onnx/
 # Byte-compiled / optimized / DLL files
