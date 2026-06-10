@@ -22,9 +22,7 @@ LOCAL_INPUT_DIR="/data8/zhangdeming/PromptZip/GEWU-dataset/test"              # 
 DEVICE_TEST_DIR="/data/zhangdeming/qwen3/GEWU-dataset/test" # 设备上的测试目录
 DEVICE_OUTPUT_DIR="/data/qwen3/output/test" # 设备上的输出目录
 LOCAL_OUTPUT_DIR="/data8/zhangdeming/PromptZip/GEWU_output/test"       # 本地回收文件的目录
-QWEN3_PATH="/data/qwen3/qwen3/qwen3-reranker-0.6b/qwen3"           # 设备上 qwen3 可执行文件的绝对路径
-TOKENIZER_PATH="/data/qwen3/qwen3-reranker-0.6b/Q4_N_0_G128/tokenizer.json" # 设备上 tokenizer 路径
-PARAMS_PATH="/data/qwen3/qwen3-reranker-0.6b/Q4_N_0_G128/params" # 设备上参数路径
+QWEN_PATH="/data/qwen3/qwen3-reranker-0.6b/qwen3"           # 设备上 qwen 可执行文件的绝对路径
 
 # 显示帮助信息
 show_help() {
@@ -51,7 +49,7 @@ echo "端侧推理自动化脚本"
 echo "========================================"
 echo "本地输入目录: $LOCAL_INPUT_DIR"
 echo "本地输出目录: $LOCAL_OUTPUT_DIR"
-echo "设备上的 qwen3 路径: $QWEN3_PATH"
+echo "设备上的 qwen 路径: $QWEN_PATH"
 echo ""
 
 # 1. 检查本地输入目录
@@ -98,7 +96,7 @@ printf "%s\n" "# 设置库路径" >> "$TEMP_SCRIPT"
 printf "%s\n" "export LD_LIBRARY_PATH=/data/qwen3/qwen3/qwen3-reranker-0.6b" >> "$TEMP_SCRIPT"
 printf "%s\n" "" >> "$TEMP_SCRIPT"
 printf "%s\n" "# 确保使用绝对路径" >> "$TEMP_SCRIPT"
-printf "%s\n" "QWEN3_ABS_PATH=\"$QWEN3_PATH\"" >> "$TEMP_SCRIPT"
+printf "%s\n" "QWEN3_ABS_PATH=\"$QWEN_PATH\"" >> "$TEMP_SCRIPT"
 printf "%s\n" "" >> "$TEMP_SCRIPT"
 printf "%s\n" "# 遍历所有测试 JSON 文件" >> "$TEMP_SCRIPT"
 printf "%s\n" "for json_file in $DEVICE_TEST_DIR/*.json; do" >> "$TEMP_SCRIPT"
@@ -120,14 +118,14 @@ printf "%s\n" "" >> "$TEMP_SCRIPT"
 printf "%s\n" "echo \"推理完成\"" >> "$TEMP_SCRIPT"
 
 # 发送脚本到设备
-hdc -s 100.103.109.221:8710 file send "$TEMP_SCRIPT" /data/qwen3/qwen3_script.sh
+hdc -s 100.103.109.221:8710 file send "$TEMP_SCRIPT" /data/qwen3/qwen_script.sh
 
 # 在设备上执行脚本（非交互模式）
-hdc -s 100.103.109.221:8710 shell "chmod +x /data/qwen3/qwen3_script.sh && /data/qwen3/qwen3_script.sh"
+hdc -s 100.103.109.221:8710 shell "chmod +x /data/qwen3/qwen_script.sh && /data/qwen3/qwen_script.sh"
 
 # 清理
 rm -f "$TEMP_SCRIPT"
-hdc -s 100.103.109.221:8710 shell "rm -f /data/qwen3/qwen3_script.sh" 2>/dev/null || true
+hdc -s 100.103.109.221:8710 shell "rm -f /data/qwen3/qwen_script.sh" 2>/dev/null || true
 
 # 6. 回收输出文件（只在当前目录查找）
 echo ""

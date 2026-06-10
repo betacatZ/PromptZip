@@ -30,7 +30,7 @@ def construct_llm(llm_config):
         tensor_parallel_size=1,
         trust_remote_code=True,
         enforce_eager=True,
-        gpu_memory_utilization=0.5,
+        gpu_memory_utilization=0.8,
     )
 
     return llm
