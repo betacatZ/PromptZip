@@ -310,13 +310,19 @@ def main():
         "--tokenizer_path",
         type=str,
         default=None,
-        help="端侧LLM tokenizer 路径（用于截断判断），如不指定则不做截断",
+        help="端侧设备上的 tokenizer 路径（用于构造端侧推理JSON模板中的 tokenizer.model_path）",
+    )
+    parser.add_argument(
+        "--local_tokenizer_path",
+        type=str,
+        default=None,
+        help="本地 tokenizer 路径（用于截断判断），如不指定则使用 --model_name 加载",
     )
     parser.add_argument(
         "--model_name",
         type=str,
         default="Qwen/Qwen2.5-7B-Instruct",
-        help="端侧LLM模型名称（用于加载tokenizer，仅在未指定 --tokenizer_path 时使用）",
+        help="端侧LLM模型名称（用于加载本地tokenizer做截断判断，仅在未指定 --local_tokenizer_path 时使用）",
     )
     parser.add_argument(
         "--params_path",
@@ -327,8 +333,8 @@ def main():
     parser.add_argument(
         "--max_ctx",
         type=int,
-        default=8192,
-        help="端侧LLM 最大上下文token数，默认 8192",
+        default=32768,
+        help="端侧LLM 最大上下文token数，默认 32768",
     )
     parser.add_argument(
         "--save_compressed",
@@ -342,10 +348,12 @@ def main():
     json_template = build_baseline_json_template(args)
 
     # 加载 tokenizer（用于截断判断）
+    # 注意：tokenizer_path 是端侧设备上的路径，用于JSON模板，不能用于本地加载
+    # 本地截断用的 tokenizer 应从 local_tokenizer_path 或 model_name 加载
     tokenizer = None
-    if args.tokenizer_path:
-        print(f"正在从本地路径加载 tokenizer: {args.tokenizer_path}")
-        tokenizer = AutoTokenizer.from_pretrained(args.tokenizer_path)
+    if args.local_tokenizer_path:
+        print(f"正在从本地路径加载 tokenizer: {args.local_tokenizer_path}")
+        tokenizer = AutoTokenizer.from_pretrained(args.local_tokenizer_path)
     else:
         print(f"正在加载 tokenizer: {args.model_name}")
         tokenizer = AutoTokenizer.from_pretrained(args.model_name)
