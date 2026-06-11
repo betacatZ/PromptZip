@@ -170,11 +170,11 @@ dataset2prompt = {
     "passage_retrieval_zh": [
         {
             "role": "system",
-            'content': '你是中文阅读助手。请根据摘要判断该段落属于哪个段落，答案格式为"段落1"、"段落2"',
+            "content": '你是中文阅读助手。请根据摘要判断该段落属于哪个段落，答案格式为"段落1"、"段落2"',
         },
         {
             "role": "user",
-            'content': '{context}\n\n下面是一个摘要:\n{input}\n\n请输入摘要所属段落的编号。答案格式必须是"段落1"、"段落2"等格式\n\n答案是：',
+            "content": '{context}\n\n下面是一个摘要:\n{input}\n\n请输入摘要所属段落的编号。答案格式必须是"段落1"、"段落2"等格式\n\n答案是：',
         },
     ],
     "lcc": [
@@ -253,7 +253,7 @@ def build_text_messages(instruction, query, document):
     return [
         '<|im_start|>system\nJudge whether the Document meets the requirements based on the Query and the Instruct provided. Note that the answer can only be "yes" or "no".<|im_end|>\n',
         f"<|im_start|>user\n<Instruct>: {instruction}\n<Query>: {query}\n<Document>: {document}<|im_end|>\n",
-        "<|im_start|>assistant\n<tool_call>\n\nRep\n\n",
+        "<|im_start|>assistant\n<think>\n\n</think>\n\n",
     ]
 
 
@@ -574,17 +574,24 @@ def main():
     parser = argparse.ArgumentParser(description="提取数据集并构建推理JSON文件")
     parser.add_argument("--input_file", type=str, required=True, help="输入的jsonl文件路径")
     parser.add_argument("--output_dir", type=str, required=True, help="输出目录")
-    parser.add_argument("--mode", type=str, choices=["chunk", "baseline"], default="chunk",
-        help="运行模式：chunk=切分文档后逐块推理(reranker)；baseline=传入完整文档(LLM问答)，用于基线测试")
+    parser.add_argument(
+        "--mode",
+        type=str,
+        choices=["chunk", "baseline"],
+        default="chunk",
+        help="运行模式：chunk=切分文档后逐块推理(reranker)；baseline=传入完整文档(LLM问答)，用于基线测试",
+    )
 
-    parser.add_argument("--model_name", type=str, default="Qwen/Qwen3-Reranker-0.6B",
-        help="模型名称（chunk模式用reranker，baseline模式用LLM）")
+    parser.add_argument(
+        "--model_name",
+        type=str,
+        default="Qwen/Qwen3-Reranker-0.6B",
+        help="模型名称（chunk模式用reranker，baseline模式用LLM）",
+    )
     parser.add_argument("--chunk_size", type=int, default=256, help="块大小（仅chunk模式生效）")
     parser.add_argument("--device", type=str, default="cpu", help="设备 (cpu/cuda)")
-    parser.add_argument("--tokenizer_path", type=str, required=True,
-        help="tokenizer路径")
-    parser.add_argument("--params_path", type=str, required=True,
-        help="参数路径")
+    parser.add_argument("--tokenizer_path", type=str, required=True, help="tokenizer路径")
+    parser.add_argument("--params_path", type=str, required=True, help="参数路径")
     parser.add_argument("--max_ctx", type=int, default=512, help="最大上下文token数")
     parser.add_argument("--save_chunks", action="store_true", help="保存 chunks/baseline 信息用于后续对比")
 
