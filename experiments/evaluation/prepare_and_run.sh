@@ -151,11 +151,8 @@ if [ "$has_json_files" -eq 0 ]; then
 fi
 
 # 7. 清理设备上的测试文件（可选）
-read -p "是否清理设备上的测试文件？(y/N): " clean_confirm
-if [[ "$clean_confirm" =~ ^[Yy]$ ]]; then
-    echo "清理设备上的测试文件..."
-    hdc -s 100.103.109.221:8710 shell "rm -f $DEVICE_TEST_DIR/*.json && rm -f $DEVICE_OUTPUT_DIR/*.txt"
-fi
+echo "清理设备上的测试文件..."
+hdc -s "$HDC_ADDR" shell "rm -f $DEVICE_TEST_DIR/*.json && rm -f $DEVICE_OUTPUT_DIR/*.txt"
 
 echo ""
 echo "========================================"
