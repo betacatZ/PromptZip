@@ -248,6 +248,15 @@ class DevicePipeline:
         local_input_dir = self.paths["chunk_output_dir"]
         local_output_dir = self.paths["device_rerank_output_dir"]
 
+        if self.dry_run:
+            print(f"  [dry_run] hdc -s {hdc_addr} shell mkdir -p {device_test_dir}")
+            print(f"  [dry_run] hdc -s {hdc_addr} shell mkdir -p {device_output_dir}")
+            print(f"  [dry_run] hdc -s {hdc_addr} file send {local_input_dir}/*.json {device_test_dir}/")
+            print(f"  [dry_run] hdc -s {hdc_addr} shell <推理脚本>")
+            print(f"  [dry_run] hdc -s {hdc_addr} file recv {device_output_dir}/*.txt {local_output_dir}/")
+            print(f"  [dry_run] hdc -s {hdc_addr} shell rm -f {device_test_dir}/*.json {device_output_dir}/*.txt")
+            return
+
         # 检查本地输入目录
         if not os.path.isdir(local_input_dir):
             raise RuntimeError(f"本地输入目录不存在: {local_input_dir}\n请先执行 extract_dataset.py --mode chunk --save_chunks")
@@ -263,18 +272,6 @@ class DevicePipeline:
             raise RuntimeError(f"在 {local_input_dir} 中没有找到 JSON 文件")
 
         print(f"  共 {len(json_files)} 个 JSON 文件")
-
-        if self.dry_run:
-            print(f"  [dry_run] hdc -s {hdc_addr} shell mkdir -p {device_test_dir}")
-            print(f"  [dry_run] hdc -s {hdc_addr} shell mkdir -p {device_output_dir}")
-            for f in json_files:
-                print(f"  [dry_run] hdc -s {hdc_addr} file send {f} {device_test_dir}/{f.name}")
-            print(f"  [dry_run] hdc -s {hdc_addr} shell <推理脚本>")
-            for f in json_files:
-                txt_name = f.stem + ".txt"
-                print(f"  [dry_run] hdc -s {hdc_addr} file recv {device_output_dir}/{txt_name} {local_output_dir}/{txt_name}")
-            print(f"  [dry_run] hdc -s {hdc_addr} shell rm -f {device_test_dir}/*.json {device_output_dir}/*.txt")
-            return
 
         # 1. 在设备上创建目录
         hdc_mkdir(hdc_addr, device_test_dir)
@@ -369,10 +366,6 @@ class DevicePipeline:
         input_dir = self.paths["device_rerank_output_dir"]
         output_file = self.paths["scores_csv"]
 
-        # 检查输入目录
-        if not os.path.isdir(input_dir):
-            raise RuntimeError(f"Step 2 输入目录不存在: {input_dir}")
-
         script_path = os.path.join(self.script_dir, "parse_and_collect.py")
         args = {
             "input_dir": input_dir,
@@ -382,6 +375,10 @@ class DevicePipeline:
         if self.dry_run:
             print(f"  [dry_run] python {script_path} --input_dir {input_dir} --output_file {output_file}")
             return
+
+        # 检查输入目录
+        if not os.path.isdir(input_dir):
+            raise RuntimeError(f"Step 2 输入目录不存在: {input_dir}")
 
         result = run_python_script(script_path, args)
 
@@ -410,14 +407,6 @@ class DevicePipeline:
         input_file = self.paths["input_file"]
         output_dir = self.paths["llm_json_output_dir"]
 
-        # 检查输入
-        if not os.path.isdir(chunks_dir):
-            raise RuntimeError(f"chunks 目录不存在: {chunks_dir}")
-        if not os.path.isfile(scores_csv):
-            raise RuntimeError(f"scores CSV 不存在: {scores_csv}")
-
-        self._ensure_dir(output_dir)
-
         script_path = os.path.join(self.script_dir, "device_rerank_compress.py")
         args = {
             "chunks_dir": chunks_dir,
@@ -443,6 +432,14 @@ class DevicePipeline:
                     parts.append(f"--{k} {v}")
             print(f"  [dry_run] {subcmd_str(parts)}")
             return
+
+        # 检查输入
+        if not os.path.isdir(chunks_dir):
+            raise RuntimeError(f"chunks 目录不存在: {chunks_dir}")
+        if not os.path.isfile(scores_csv):
+            raise RuntimeError(f"scores CSV 不存在: {scores_csv}")
+
+        self._ensure_dir(output_dir)
 
         result = run_python_script(script_path, args)
 
@@ -473,6 +470,14 @@ class DevicePipeline:
         local_input_dir = self.paths["llm_json_output_dir"]
         local_output_dir = self.paths["device_llm_output_dir"]
 
+        if self.dry_run:
+            print(f"  [dry_run] hdc -s {hdc_addr} shell mkdir -p {device_test_dir}")
+            print(f"  [dry_run] hdc -s {hdc_addr} shell mkdir -p {device_output_dir}")
+            print(f"  [dry_run] hdc -s {hdc_addr} file send {local_input_dir}/*.json {device_test_dir}/")
+            print(f"  [dry_run] hdc -s {hdc_addr} shell <推理脚本>")
+            print(f"  [dry_run] hdc -s {hdc_addr} file recv {device_output_dir}/*.txt {local_output_dir}/")
+            return
+
         # 检查本地输入目录
         if not os.path.isdir(local_input_dir):
             raise RuntimeError(f"本地输入目录不存在: {local_input_dir}")
@@ -488,17 +493,6 @@ class DevicePipeline:
             raise RuntimeError(f"在 {local_input_dir} 中没有找到 JSON 文件")
 
         print(f"  共 {len(json_files)} 个 JSON 文件")
-
-        if self.dry_run:
-            print(f"  [dry_run] hdc -s {hdc_addr} shell mkdir -p {device_test_dir}")
-            print(f"  [dry_run] hdc -s {hdc_addr} shell mkdir -p {device_output_dir}")
-            for f in json_files:
-                print(f"  [dry_run] hdc -s {hdc_addr} file send {f} {device_test_dir}/{f.name}")
-            print(f"  [dry_run] hdc -s {hdc_addr} shell <推理脚本>")
-            for f in json_files:
-                txt_name = f.stem + ".txt"
-                print(f"  [dry_run] hdc -s {hdc_addr} file recv {device_output_dir}/{txt_name} {local_output_dir}/{txt_name}")
-            return
 
         # 1. 在设备上创建目录
         hdc_mkdir(hdc_addr, device_test_dir)
@@ -592,12 +586,6 @@ class DevicePipeline:
         dataset_dir = self.paths["dataset_dir"]
         output_dir = self.paths["eval_results_dir"]
 
-        # 检查输入
-        if not os.path.isdir(input_dir):
-            raise RuntimeError(f"Step 5 输入目录不存在: {input_dir}")
-
-        self._ensure_dir(output_dir)
-
         script_path = os.path.join(self.script_dir, "parse_baseline_output.py")
         args = {
             "input_dir": input_dir,
@@ -611,6 +599,12 @@ class DevicePipeline:
                 parts.append(f"--{k} {v}")
             print(f"  [dry_run] {subcmd_str(parts)}")
             return
+
+        # 检查输入
+        if not os.path.isdir(input_dir):
+            raise RuntimeError(f"Step 5 输入目录不存在: {input_dir}")
+
+        self._ensure_dir(output_dir)
 
         result = run_python_script(script_path, args)
 
