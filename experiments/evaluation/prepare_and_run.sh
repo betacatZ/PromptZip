@@ -17,31 +17,39 @@ if [ -n "$ZSH_VERSION" ]; then
     setopt NO_NOMATCH  # 在无匹配文件时不报错
 fi
 
-# 配置（请根据实际情况修改）
+# 配置（请根据实际情况修改，也可通过 CLI 参数覆盖）
 LOCAL_INPUT_DIR="/data8/zhangdeming/PromptZip/GEWU-dataset/test"              # 本地包含 JSON 文件的目录
 DEVICE_TEST_DIR="/data/zhangdeming/qwen3/GEWU-dataset/test" # 设备上的测试目录
 DEVICE_OUTPUT_DIR="/data/qwen3/output/test" # 设备上的输出目录
 LOCAL_OUTPUT_DIR="/data8/zhangdeming/PromptZip/GEWU_output/test"       # 本地回收文件的目录
 QWEN_PATH="/data/qwen3/qwen3-reranker-0.6b/qwen3"           # 设备上 qwen 可执行文件的绝对路径
+HDC_ADDR="100.103.109.221:8710"                              # hdc 连接地址
 
 # 显示帮助信息
 show_help() {
     echo "使用方法: $0 [选项]"
     echo "选项:"
-    echo "  -i, --input DIR    本地包含 JSON 文件的目录（默认: $LOCAL_INPUT_DIR）"
-    echo "  -o, --output DIR   本地回收文件的目录（默认: $LOCAL_OUTPUT_DIR）"
-    echo "  -h, --help         显示帮助信息"
+    echo "  -i, --input DIR          本地包含 JSON 文件的目录（默认: $LOCAL_INPUT_DIR）"
+    echo "  -o, --output DIR         本地回收文件的目录（默认: $LOCAL_OUTPUT_DIR）"
+    echo "  --device-test DIR        设备上的测试目录（默认: $DEVICE_TEST_DIR）"
+    echo "  --device-output DIR      设备上的输出目录（默认: $DEVICE_OUTPUT_DIR）"
+    echo "  --qwen-path PATH         设备上 qwen 可执行文件的绝对路径（默认: $QWEN_PATH）"
+    echo "  --hdc-addr ADDR          hdc 连接地址（默认: $HDC_ADDR）"
+    echo "  -h, --help               显示帮助信息"
 }
 
 # 解析命令行参数
 while [[ "$#" -gt 0 ]]; do
     case $1 in
-        -i|--input) LOCAL_INPUT_DIR="$2"; shift ;;
-        -o|--output) LOCAL_OUTPUT_DIR="$2"; shift ;;
+        -i|--input) LOCAL_INPUT_DIR="$2"; shift 2 ;;
+        -o|--output) LOCAL_OUTPUT_DIR="$2"; shift 2 ;;
+        --device-test) DEVICE_TEST_DIR="$2"; shift 2 ;;
+        --device-output) DEVICE_OUTPUT_DIR="$2"; shift 2 ;;
+        --qwen-path) QWEN_PATH="$2"; shift 2 ;;
+        --hdc-addr) HDC_ADDR="$2"; shift 2 ;;
         -h|--help) show_help; exit 0 ;;
         *) echo "未知参数: $1"; show_help; exit 1 ;;
     esac
-    shift
 done
 
 echo "========================================"
@@ -63,7 +71,7 @@ mkdir -p "$LOCAL_OUTPUT_DIR"
 
 # 3. 在设备上创建目录
 echo "在设备上创建目录..."
-hdc -s 100.103.109.221:8710 shell "mkdir -p $DEVICE_TEST_DIR && mkdir -p $DEVICE_OUTPUT_DIR"
+hdc -s "$HDC_ADDR" shell "mkdir -p $DEVICE_TEST_DIR && mkdir -p $DEVICE_OUTPUT_DIR"
 
 # 4. 发送所有 JSON 文件到设备（只在当前目录查找）
 echo "发送 JSON 文件到设备..."
@@ -74,7 +82,7 @@ for json_file in "$LOCAL_INPUT_DIR"/*.json; do
     if [ -e "$json_file" ]; then
         filename=$(basename "$json_file")
         echo "  发送: $filename"
-        hdc -s 100.103.109.221:8710 file send "$json_file" "$DEVICE_TEST_DIR/$filename"
+        hdc -s "$HDC_ADDR" file send "$json_file" "$DEVICE_TEST_DIR/$filename"
         has_json_files=1
     fi
 done
@@ -118,14 +126,14 @@ printf "%s\n" "" >> "$TEMP_SCRIPT"
 printf "%s\n" "echo \"推理完成\"" >> "$TEMP_SCRIPT"
 
 # 发送脚本到设备
-hdc -s 100.103.109.221:8710 file send "$TEMP_SCRIPT" /data/qwen3/qwen_script.sh
+hdc -s "$HDC_ADDR" file send "$TEMP_SCRIPT" /data/qwen3/qwen_script.sh
 
 # 在设备上执行脚本（非交互模式）
-hdc -s 100.103.109.221:8710 shell "chmod +x /data/qwen3/qwen_script.sh && /data/qwen3/qwen_script.sh"
+hdc -s "$HDC_ADDR" shell "chmod +x /data/qwen3/qwen_script.sh && /data/qwen3/qwen_script.sh"
 
 # 清理
 rm -f "$TEMP_SCRIPT"
-hdc -s 100.103.109.221:8710 shell "rm -f /data/qwen3/qwen_script.sh" 2>/dev/null || true
+hdc -s "$HDC_ADDR" shell "rm -f /data/qwen3/qwen_script.sh" 2>/dev/null || true
 
 # 6. 回收输出文件（只在当前目录查找）
 echo ""
@@ -141,7 +149,7 @@ for json_file in "$LOCAL_INPUT_DIR"/*.json; do
         local_path="$LOCAL_OUTPUT_DIR/$output_file"
         
         echo "  回收: $output_file"
-        hdc -s 100.103.109.221:8710 file recv "$device_path" "$local_path"
+        hdc -s "$HDC_ADDR" file recv "$device_path" "$local_path"
         has_json_files=1
     fi
 done

@@ -1,0 +1,49 @@
+# 端侧 Reranker + LLM 端到端评估配置
+# 使用方式: python run_device_pipeline.py --config ../config/device_pipeline.yaml
+
+# ========== 输入配置 ==========
+# Step 1 (extract_dataset) 的输出目录 — 包含 reranker 推理 JSON 和 inputs/ 子目录
+# 此目录由 extract_dataset.py --mode chunk --save_chunks 生成，pipeline 不负责生成
+chunk_output_dir: /data8/zhangdeming/PromptZip/GEWU-dataset/test
+
+# 原始数据集 JSONL 文件（用于 device_rerank_compress 和 parse_baseline_output）
+input_file: /data8/zhangdeming/.cache/huggingface/datasets/zai-org/LongBench/data/narrativeqa.jsonl
+
+# 数据集目录（包含所有 .jsonl 文件，用于 parse_baseline_output 查找 ground truth）
+dataset_dir: /data8/zhangdeming/.cache/huggingface/datasets/zai-org/LongBench/data
+
+# ========== 输出配置 ==========
+# 输出根目录，pipeline 自动在此下创建各步骤子目录
+output_root: /data8/zhangdeming/PromptZip/GEWU_output
+
+# 数据集名称（用于在 output_root 下创建子目录，默认从 input_file 文件名推导）
+# dataset_name: narrativeqa  # 如不指定，自动从 input_file basename 推导
+
+# ========== Step 2: 端侧 Reranker 推理配置 ==========
+reranker_device:
+  hdc_addr: 100.103.109.221:8710
+  # 设备端路径
+  device_test_dir: /data/zhangdeming/qwen3/GEWU-dataset/test
+  device_output_dir: /data/qwen3/output/test
+  qwen_path: /data/qwen3/qwen3-reranker-0.6b/qwen3
+  ld_library_path: /data/qwen3/qwen3/qwen3-reranker-0.6b
+
+# ========== Step 3.5: device_rerank_compress 配置 ==========
+compress:
+  rate: 0.2
+  max_ctx: 32768
+  # 端侧LLM JSON模板参数
+  tokenizer_path: /data/qwen2/Q4_N_0_G128/tokenizer.json
+  params_path: /data/qwen2/Q4_N_0_G128/params.bin
+  # 本地tokenizer（用于截断判断）
+  local_tokenizer_path: null  # 如为null则使用 model_name 从网络加载
+  model_name: Qwen/Qwen2.5-7B-Instruct
+  save_compressed: true
+
+# ========== Step 4: 端侧 LLM 推理配置 ==========
+llm_device:
+  hdc_addr: 100.103.109.221:8710
+  # 设备端路径
+  device_qwen_dir: /data/qwen2
+  device_test_dir: /data/qwen2/test
+  device_output_dir: /data/qwen2/output/test

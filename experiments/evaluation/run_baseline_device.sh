@@ -21,7 +21,7 @@ if [ -n "$ZSH_VERSION" ]; then
     setopt NO_NOMATCH  # 在无匹配文件时不报错
 fi
 
-# 配置（请根据实际情况修改）
+# 配置（请根据实际情况修改，也可通过 CLI 参数覆盖）
 DEFAULT_INPUT_DIRS="/data8/zhangdeming/PromptZip/GEWU-dataset-baseline/test"  # 默认本地输入目录
 DEVICE_QWEN_DIR="/data/qwen2"                                                  # 设备上 qwen 工作目录
 DEVICE_TEST_DIR="/data/qwen2/test"                                              # 设备上的测试JSON目录
@@ -37,12 +37,16 @@ LOCAL_OUTPUT_DIR="$DEFAULT_OUTPUT_DIR"
 show_help() {
     echo "使用方法: $0 [选项]"
     echo "选项:"
-    echo "  -i, --input DIR...  本地包含 baseline JSON 文件的目录（可指定多个）"
-    echo "                      多个目录可连续传入: -i dir1 dir2 dir3"
-    echo "                      或多次传入: -i dir1 -i dir2"
-    echo "                      输出会保持对应的目录结构（basename作为子目录）"
-    echo "  -o, --output DIR    本地回收文件的根目录（默认: $DEFAULT_OUTPUT_DIR）"
-    echo "  -h, --help          显示帮助信息"
+    echo "  -i, --input DIR...       本地包含 baseline JSON 文件的目录（可指定多个）"
+    echo "                           多个目录可连续传入: -i dir1 dir2 dir3"
+    echo "                           或多次传入: -i dir1 -i dir2"
+    echo "                           输出会保持对应的目录结构（basename作为子目录）"
+    echo "  -o, --output DIR         本地回收文件的根目录（默认: $DEFAULT_OUTPUT_DIR）"
+    echo "  --device-qwen-dir DIR    设备上 qwen 工作目录（默认: $DEVICE_QWEN_DIR）"
+    echo "  --device-test DIR        设备上的测试JSON目录（默认: $DEVICE_TEST_DIR）"
+    echo "  --device-output DIR      设备上的输出目录（默认: $DEVICE_OUTPUT_DIR）"
+    echo "  --hdc-addr ADDR          hdc 连接地址（默认: $HDC_ADDR）"
+    echo "  -h, --help               显示帮助信息"
     echo ""
     echo "示例:"
     echo "  $0 -i /path/to/test1 /path/to/test2"
@@ -60,6 +64,10 @@ while [[ "$#" -gt 0 ]]; do
             done
             ;;
         -o|--output) LOCAL_OUTPUT_DIR="$2"; shift 2 ;;
+        --device-qwen-dir) DEVICE_QWEN_DIR="$2"; shift 2 ;;
+        --device-test) DEVICE_TEST_DIR="$2"; shift 2 ;;
+        --device-output) DEVICE_OUTPUT_DIR="$2"; shift 2 ;;
+        --hdc-addr) HDC_ADDR="$2"; shift 2 ;;
         -h|--help) show_help; exit 0 ;;
         *) echo "未知参数: $1"; show_help; exit 1 ;;
     esac

@@ -545,7 +545,7 @@ def build_baseline_json_template(args):
         },
         "esets": {
             "im_type": "fp16",
-            "backend": "cpu",
+            "backend": "knpu",
             "comp_on_core": [-1, -1],
             "max_ctx": args.max_ctx,
             "n_batched": 128,
