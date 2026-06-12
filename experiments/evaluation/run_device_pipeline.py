@@ -543,7 +543,7 @@ class DevicePipeline:
             "        echo \"[$current/$total] 处理: $filename\"",
             f"        {device_qwen_dir}/qwen2 \"$json_file\" > \"$output_file\" 2>&1 || {{",
             "            echo \"  警告: $filename 处理失败\"",
-            "        }}",
+            "        }",
             "    fi",
             "done",
             "echo '推理完成'",
