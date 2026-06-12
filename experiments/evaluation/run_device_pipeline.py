@@ -39,6 +39,12 @@ import yaml
 # 辅助函数：hdc 设备操作
 # ============================================================
 
+def _shell_quote(s):
+    """对字符串加单引号保护，防止被本地 shell 解释特殊字符"""
+    # 单引号内不能包含单引号本身，需要用 '\'' 转义
+    return "'" + s.replace("'", "'\\''") + "'"
+
+
 def hdc_cmd(hdc_addr, args, check=True, verbose=True):
     """
     执行 hdc 命令（通过 zsh -ic 以加载用户 shell profile 中的 PATH）
@@ -46,15 +52,21 @@ def hdc_cmd(hdc_addr, args, check=True, verbose=True):
     Args:
         hdc_addr: hdc 连接地址 (如 100.103.109.221:8710)
         args: hdc 命令参数列表 (如 ["shell", "mkdir -p /data/test"])
-              当 args[0] 为 "shell" 时，args[1] 中的 shell 操作符（&&、||等）
-              会自动加引号保护，防止被本地 zsh 解释
+              "shell" 子命令的参数整体加引号以保护 &&、|| 等远端 shell 操作符
+              "file send/recv" 子命令的路径参数分别加引号以防止本地 zsh glob 展开
         check: 是否检查返回码
         verbose: 是否打印命令
     """
-    # 构建 shell 命令字符串，对 "shell" 子命令的参数加单引号保护
+    # 构建 shell 命令字符串，对参数加引号保护防止被本地 zsh 解释
+    # hdc 子命令名（shell、file、send、recv）不加引号
     if args and args[0] == "shell" and len(args) > 1:
-        cmd_str = f"hdc -s {hdc_addr} shell '{args[1]}'"
+        # shell 子命令：将后续所有参数合并为一条远端命令，整体加单引号
+        cmd_str = f"hdc -s {hdc_addr} shell {_shell_quote(args[1])}"
+    elif args and args[0] == "file" and len(args) >= 3:
+        # file send/recv：子命令名和操作名不加引号，路径参数加引号
+        cmd_str = f"hdc -s {hdc_addr} file {args[1]} {_shell_quote(args[2])} {_shell_quote(args[3])}"
     else:
+        # 其他命令：简单拼接（如无参数的 shell 命令）
         cmd_str = subcmd_str(["hdc", "-s", hdc_addr] + args)
     if verbose:
         print(f"  [hdc] {cmd_str}")
