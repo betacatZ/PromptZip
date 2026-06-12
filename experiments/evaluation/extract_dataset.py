@@ -612,6 +612,7 @@ def main():
             model_name=args.model_name,
             device_map=args.device,
             chunk_end_tokens=["。", "！", "？", ".", "!", "?", "\n", "。\n", "？\n", "！\n"],
+            engine="hf",
         )
     elif args.mode == "baseline":
         print("正在初始化 tokenizer（baseline模式用于截断超长文档）...")
