@@ -46,10 +46,16 @@ def hdc_cmd(hdc_addr, args, check=True, verbose=True):
     Args:
         hdc_addr: hdc 连接地址 (如 100.103.109.221:8710)
         args: hdc 命令参数列表 (如 ["shell", "mkdir -p /data/test"])
+              当 args[0] 为 "shell" 时，args[1] 中的 shell 操作符（&&、||等）
+              会自动加引号保护，防止被本地 zsh 解释
         check: 是否检查返回码
         verbose: 是否打印命令
     """
-    cmd_str = subcmd_str(["hdc", "-s", hdc_addr] + args)
+    # 构建 shell 命令字符串，对 "shell" 子命令的参数加单引号保护
+    if args and args[0] == "shell" and len(args) > 1:
+        cmd_str = f"hdc -s {hdc_addr} shell '{args[1]}'"
+    else:
+        cmd_str = subcmd_str(["hdc", "-s", hdc_addr] + args)
     if verbose:
         print(f"  [hdc] {cmd_str}")
     result = subprocess.run(["zsh", "-ic", cmd_str], capture_output=True, text=True, check=False)
