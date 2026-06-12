@@ -41,7 +41,7 @@ import yaml
 
 def hdc_cmd(hdc_addr, args, check=True, verbose=True):
     """
-    执行 hdc 命令（通过 zsh -ic 以加载用户 shell profile 中的 PATH）
+    执行 hdc 命令
 
     Args:
         hdc_addr: hdc 连接地址 (如 100.103.109.221:8710)
@@ -49,10 +49,10 @@ def hdc_cmd(hdc_addr, args, check=True, verbose=True):
         check: 是否检查返回码
         verbose: 是否打印命令
     """
-    cmd_str = subcmd_str(["hdc", "-s", hdc_addr] + args)
+    cmd = ["hdc", "-s", hdc_addr] + args
     if verbose:
-        print(f"  [hdc] {cmd_str}")
-    result = subprocess.run(["zsh", "-ic", cmd_str], capture_output=True, text=True, check=False)
+        print(f"  [hdc] {subcmd_str(cmd)}")
+    result = subprocess.run(cmd, capture_output=True, text=True, check=False)
     if check and result.returncode != 0:
         print(f"  [hdc] 命令失败: {result.stderr}")
         raise RuntimeError(f"hdc 命令失败: {subcmd_str(cmd)}\nstderr: {result.stderr}")
