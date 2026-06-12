@@ -1,9 +1,16 @@
 # 端侧 Reranker + LLM 端到端评估配置
 # 使用方式: python run_device_pipeline.py --config ../config/device_pipeline.yaml
+#
+# Pipeline 步骤（extract_dataset 需在 pipeline 之外单独执行，不在本配置中）:
+#   Step 1: 推送 reranker JSON → 设备推理 → 回收分数 (reranker_device)
+#   Step 2: parse_and_collect → 端侧分数 CSV
+#   Step 3: device_rerank_compress → topk筛选 → 生成LLM推理JSON (compress)
+#   Step 4: 推送 LLM JSON → 设备推理 → 回收回答 (llm_device)
+#   Step 5: parse_baseline_output → 评分
 
 # ========== 输入配置 ==========
-# Step 1 (extract_dataset) 的输出目录 — 包含 reranker 推理 JSON 和 inputs/ 子目录
-# 此目录由 extract_dataset.py --mode chunk --save_chunks 生成，pipeline 不负责生成
+# reranker 推理 JSON 所在目录（包含 *.json 和 inputs/ 子目录）
+# 由外部 extract_dataset.py --mode chunk --save_chunks 生成，pipeline 不负责生成
 chunk_output_dir: /data8/zhangdeming/PromptZip/GEWU-dataset/test
 
 # 原始数据集 JSONL 文件（用于 device_rerank_compress 和 parse_baseline_output）
@@ -19,7 +26,7 @@ output_root: /data8/zhangdeming/PromptZip/GEWU_output
 # 数据集名称（用于在 output_root 下创建子目录，默认从 input_file 文件名推导）
 # dataset_name: narrativeqa  # 如不指定，自动从 input_file basename 推导
 
-# ========== Step 2: 端侧 Reranker 推理配置 ==========
+# ========== Step 1: 端侧 Reranker 推理配置 ==========
 reranker_device:
   hdc_addr: 100.103.109.221:8710
   # 设备端路径
@@ -28,7 +35,7 @@ reranker_device:
   qwen_path: /data/qwen3/qwen3-reranker-0.6b/qwen3
   ld_library_path: /data/qwen3/qwen3/qwen3-reranker-0.6b
 
-# ========== Step 3.5: device_rerank_compress 配置 ==========
+# ========== Step 3: device_rerank_compress 配置 ==========
 compress:
   rate: 0.2
   max_ctx: 32768
