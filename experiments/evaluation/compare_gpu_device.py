@@ -146,7 +146,7 @@ def parse_device_scores(device_outputs_dir: str, sample_id: str, num_chunks: int
         return None
 
     scores = []
-    pattern = r"correlation coefficient:\s*([\d.]+)"
+    pattern = r"correlation coefficient:\s*([\d.]+(?:[eE][+-]?\d+)?)"
 
     for chunk_idx in range(num_chunks):
         filename = f"sample_{sample_id}_chunk_{chunk_idx}.txt"

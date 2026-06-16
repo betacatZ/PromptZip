@@ -9,7 +9,7 @@ def extract_correlation_coefficient(content):
     """
     从推理输出中提取 correlation coefficient
     """
-    pattern = r"correlation coefficient:\s*([\d.]+)"
+    pattern = r"correlation coefficient:\s*([\d.]+(?:[eE][+-]?\d+)?)"
     match = re.search(pattern, content)
     if match:
         return float(match.group(1))
