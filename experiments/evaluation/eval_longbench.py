@@ -1072,7 +1072,7 @@ if __name__ == "__main__":
             if (
                 has_reranker
                 and has_compressor
-                and run_config["reranker_config"].get("selection_mode") in ["cluster", "topp", "cluster-zscore"]
+                and run_config["reranker_config"].get("selection_mode") in ["cluster", "topp", "cluster-zscore", "topk"]
             ):
                 cluster_ratio_txt = os.path.join(run_save_dir, "rate.csv")
                 avg_ratio_txt = os.path.join(run_save_dir, "avg_rate.csv")

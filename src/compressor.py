@@ -763,7 +763,7 @@ class RerankCompressor(BaseCompressor):
             representations = torch.cat(representations, dim=0)
 
         if selection_mode == "topk":
-            k = max(1, int(len(chunks) * rate))
+
             n = len(chunks)
             k = max(1, int(n * rate))
             # 1/3 uniform
@@ -778,6 +778,35 @@ class RerankCompressor(BaseCompressor):
             topk_imp = sorted(sorted(remaining_indices, key=lambda i: scores[i], reverse=True)[:k_imp])
             selected_indices = sorted(selected.union(topk_imp).union({0, n - 1}))
             selected_chunks = [chunks[i] for i in selected_indices]
+
+            # 记录实际 chunk_rate 并写入 CSV
+            chunk_rate = len(selected_chunks) / len(chunks)
+            chunk_rate_str = f"{chunk_rate:.4f}"
+            csv_path = os.path.join(result_path, "rate.csv")
+
+            if not os.path.exists(csv_path):
+                with open(csv_path, "w", newline="", encoding="utf-8") as f:
+                    writer = csv.writer(f)
+                    writer.writerow(["dataset", "chunk_rate"])
+
+            rows = []
+            dataset_found = False
+            with open(csv_path, "r", newline="", encoding="utf-8") as f:
+                reader = csv.reader(f)
+                rows = list(reader)
+
+            for i, row in enumerate(rows):
+                if row[0] == dataset:
+                    rows[i] = [dataset, chunk_rate_str]
+                    dataset_found = True
+                    break
+
+            if not dataset_found:
+                rows.append([dataset, chunk_rate_str])
+
+            with open(csv_path, "w", newline="", encoding="utf-8") as f:
+                writer = csv.writer(f)
+                writer.writerows(rows)
         elif selection_mode == "mmr" and self.engine == "hf":
             n = len(chunks)
             k = max(1, int(n * rate))
