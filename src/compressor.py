@@ -480,12 +480,15 @@ class RerankCompressor(BaseCompressor):
         self.prefix = '<|im_start|>system\nJudge whether the Document meets the requirements based on the Query and the Instruct provided. Note that the answer can only be "yes" or "no".<|im_end|>\n<|im_start|>user\n'
         self.suffix = "<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n"
         if engine == "hf":
+            # 从 device_map 提取 device_id，通过 CUDA_VISIBLE_DEVICES 重映射到 cuda:0
+            self.device_id = device_map.split(":")[1] if ":" in device_map else "0"
+            os.environ["CUDA_VISIBLE_DEVICES"] = self.device_id
             self.model = AutoModelForCausalLM.from_pretrained(
                 model_name,
                 attn_implementation="flash_attention_2",
                 torch_dtype="auto",
                 trust_remote_code=True,
-                device_map=device_map,
+                device_map="cuda:0",
             ).eval()
             self.prefix_tokens = self.tokenizer.encode(self.prefix, add_special_tokens=False)
             self.suffix_tokens = self.tokenizer.encode(self.suffix, add_special_tokens=False)
@@ -652,6 +655,11 @@ class RerankCompressor(BaseCompressor):
     ):
         if query == "":
             query = "Summarize the document"
+
+        # hf engine 推理前临时切换 CUDA_VISIBLE_DEVICES，确保 Triton/AWQ kernel 访问正确的 GPU
+        if self.engine == "hf":
+            old_cuda_vis = os.environ.get("CUDA_VISIBLE_DEVICES", "")
+            os.environ["CUDA_VISIBLE_DEVICES"] = self.device_id
 
         if chunk_method == "bypunc":
             chunk_end_tokens = self.chunk_end_tokens
@@ -1029,6 +1037,10 @@ class RerankCompressor(BaseCompressor):
             with open(csv_path, "w", newline="", encoding="utf-8") as f:
                 writer = csv.writer(f)
                 writer.writerows(rows)
+
+        # hf engine 推理后恢复 CUDA_VISIBLE_DEVICES
+        if self.engine == "hf":
+            os.environ["CUDA_VISIBLE_DEVICES"] = old_cuda_vis
 
         return scores, selected_chunks, chunks
 
