@@ -230,6 +230,7 @@ def build_components(yaml_args):
                 "？\n",
                 "！\n",
             ],
+            engine= yaml_args["reranker_config"]["engine"]
         )
         ranker.max_position_embeddings = yaml_args["reranker_config"]["max_position_embeddings"]
 
