@@ -542,6 +542,7 @@ def build_components(yaml_args):
                 "？\n",
                 "！\n",
             ],
+            engine=yaml_args["reranker_config"]["engine"],
         )
         ranker.max_position_embeddings = yaml_args["reranker_config"]["max_position_embeddings"]
     elif yaml_args["reranker_config"].get("model_type") == "embedding":
@@ -1069,10 +1070,12 @@ if __name__ == "__main__":
             score_dict = eval(result_json)
             write_score(run_save_dir, score_dict)
 
-            if (
-                has_reranker
-                and run_config["reranker_config"].get("selection_mode") in ["cluster", "topp", "cluster-zscore", "topk"]
-            ):
+            if has_reranker and run_config["reranker_config"].get("selection_mode") in [
+                "cluster",
+                "topp",
+                "cluster-zscore",
+                "topk",
+            ]:
                 cluster_ratio_txt = os.path.join(run_save_dir, "rate.csv")
                 avg_ratio_txt = os.path.join(run_save_dir, "avg_rate.csv")
                 compute_rate_averages(cluster_ratio_txt, avg_ratio_txt)
