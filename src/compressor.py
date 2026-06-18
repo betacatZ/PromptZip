@@ -683,7 +683,7 @@ class RerankCompressor(BaseCompressor):
         batch_size = 32
         scores = []
         representations = []
-        need_representations = self.engine == "hf"
+        need_representations = False
 
         for i in range(0, len(chunks), batch_size):
             batch_chunks = chunks[i : i + batch_size]
