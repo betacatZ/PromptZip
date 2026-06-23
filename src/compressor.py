@@ -641,6 +641,16 @@ class RerankCompressor(BaseCompressor):
 
         return all_chunks
 
+    @staticmethod
+    def _resolve_keep_n(rate: float, n: int):
+        """根据 rate 解析保留的 chunk 数量。
+        - rate < 1：按比例保留，返回 max(1, int(n * rate))。
+        - rate >= 1：按绝对数量保留，返回 max(1, min(int(rate), n))。
+        """
+        if rate >= 1:
+            return max(1, min(int(rate), n))
+        return max(1, int(n * rate))
+
     def compress(
         self,
         doc: str,
@@ -773,7 +783,7 @@ class RerankCompressor(BaseCompressor):
         if selection_mode == "topk":
 
             n = len(chunks)
-            k = max(1, int(n * rate))
+            k = self._resolve_keep_n(rate, n)
             # 1/3 uniform
             k_uni = k // 3
             # 2/3 importance
@@ -817,7 +827,7 @@ class RerankCompressor(BaseCompressor):
                 writer.writerows(rows)
         elif selection_mode == "mmr" and self.engine == "hf":
             n = len(chunks)
-            k = max(1, int(n * rate))
+            k = self._resolve_keep_n(rate, n)
             selected_indices = self.select_chunks_by_mmr(chunks, representations, scores, k)
             selected_chunks = [chunks[i] for i in selected_indices]
 
@@ -825,14 +835,19 @@ class RerankCompressor(BaseCompressor):
             sorted_indices = sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)
             sorted_scores = [scores[i] for i in sorted_indices]
 
-            total = sum(sorted_scores)
-            cumulative = 0.0
-            top_p_indices = []
-            for i, score in enumerate(sorted_scores):
-                cumulative += score
-                top_p_indices.append(sorted_indices[i])
-                if cumulative / total >= rate:  # 累积比例达到 top-p
-                    break
+            if rate >= 1:
+                # rate >= 1：按绝对数量保留得分最高的 N 个 chunk
+                k = self._resolve_keep_n(rate, len(chunks))
+                top_p_indices = sorted_indices[:k]
+            else:
+                total = sum(sorted_scores)
+                cumulative = 0.0
+                top_p_indices = []
+                for i, score in enumerate(sorted_scores):
+                    cumulative += score
+                    top_p_indices.append(sorted_indices[i])
+                    if cumulative / total >= rate:  # 累积比例达到 top-p
+                        break
 
             # 按原顺序返回 selected chunks
             top_p_indices = sorted(top_p_indices)
@@ -875,8 +890,14 @@ class RerankCompressor(BaseCompressor):
                 chunk_rate = len(selected_chunks) / len(chunks)
 
                 # 若低于最小保留率 rate，则补充高分样本
-                if chunk_rate < rate:
+                if rate >= 1:
+                    # rate >= 1：按绝对数量作为最小保留数
+                    required_k = max(self._resolve_keep_n(rate, len(chunks)), len(selected_chunks))
+                elif chunk_rate < rate:
                     required_k = max(math.ceil(len(chunks) * rate), len(selected_chunks))
+                else:
+                    required_k = len(selected_chunks)
+                if len(selected_chunks) < required_k:
                     # 从未被选中的块中按 score 排序补充
                     remaining_indices = sorted(
                         set(range(len(chunks))) - set(selected_indices),
@@ -968,8 +989,14 @@ class RerankCompressor(BaseCompressor):
                 chunk_rate = len(selected_chunks) / len(chunks)
 
                 # 若低于最小保留率 rate，则补充高分样本
-                if chunk_rate < rate:
+                if rate >= 1:
+                    # rate >= 1：按绝对数量作为最小保留数
+                    required_k = max(self._resolve_keep_n(rate, len(chunks)), len(selected_chunks))
+                elif chunk_rate < rate:
                     required_k = max(math.ceil(len(chunks) * rate), len(selected_chunks))
+                else:
+                    required_k = len(selected_chunks)
+                if len(selected_chunks) < required_k:
                     remaining_indices = sorted(
                         set(range(len(chunks))) - set(selected_indices),
                         key=lambda i: scores[i],
