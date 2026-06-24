@@ -10,10 +10,13 @@ reranker_config:
   model_name: Qwen/Qwen3-Reranker-0.6B
   max_position_embeddings: 32768
   chunk_size: [256]
+  # rate 同时支持比例与绝对数量：< 1 时为保留比例（如 0.3 表示保留 30% chunk），>= 1 时为保留的 chunk 数（如 4 表示保留 4 个 chunk）。
+  # 仅对 RerankCompressor 生效。
+  # selection_mode 为 threshold 时，rate 复用为 score(P(yes)) 阈值，保留所有 score >= rate 的 chunk（至少保留得分最高的一块）。
   rate: [0.3,0.4,0.5,0.6]
   device_id: 0
   engine: vllm
-  selection_mode: topk # topk, cluster
+  selection_mode: topk # topk, pure-topk, cluster, topp, cluster-zscore, threshold
 
 compressor_config:
   model_type: null # # longllmlingua,llmlingua2,llm, rerank, PPL, null

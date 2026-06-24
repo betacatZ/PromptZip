@@ -1075,6 +1075,8 @@ if __name__ == "__main__":
                 "topp",
                 "cluster-zscore",
                 "topk",
+                "threshold",
+                "pure-topk",
             ]:
                 cluster_ratio_txt = os.path.join(run_save_dir, "rate.csv")
                 avg_ratio_txt = os.path.join(run_save_dir, "avg_rate.csv")

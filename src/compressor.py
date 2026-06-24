@@ -825,6 +825,35 @@ class RerankCompressor(BaseCompressor):
             with open(csv_path, "w", newline="", encoding="utf-8") as f:
                 writer = csv.writer(f)
                 writer.writerows(rows)
+        elif selection_mode == "pure-topk":
+            # pure-topk：纯按 score 取前 k 个 chunk，不做均匀采样、不强制保留首尾。
+            n = len(chunks)
+            k = self._resolve_keep_n(rate, n)
+            topk_indices = sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)[:k]
+            selected_indices = sorted(topk_indices)
+            selected_chunks = [chunks[i] for i in selected_indices]
+
+            # 记录实际 chunk_rate 并写入 CSV（表头与 topk 一致，按 dataset 覆盖）
+            chunk_rate = len(selected_chunks) / len(chunks) if chunks else 0.0
+            chunk_rate_str = f"{chunk_rate:.4f}"
+            csv_path = os.path.join(result_path, "rate.csv")
+            if not os.path.exists(csv_path):
+                with open(csv_path, "w", newline="", encoding="utf-8") as f:
+                    writer = csv.writer(f)
+                    writer.writerow(["dataset", "chunk_rate"])
+            rows = []
+            dataset_found = False
+            with open(csv_path, "r", newline="", encoding="utf-8") as f:
+                rows = list(csv.reader(f))
+            for i, row in enumerate(rows):
+                if row and row[0] == dataset:
+                    rows[i] = [dataset, chunk_rate_str]
+                    dataset_found = True
+                    break
+            if not dataset_found:
+                rows.append([dataset, chunk_rate_str])
+            with open(csv_path, "w", newline="", encoding="utf-8") as f:
+                csv.writer(f).writerows(rows)
         elif selection_mode == "mmr" and self.engine == "hf":
             n = len(chunks)
             k = self._resolve_keep_n(rate, n)
@@ -865,6 +894,38 @@ class RerankCompressor(BaseCompressor):
             with open(csv_path, "a", newline="", encoding="utf-8") as f:
                 writer = csv.writer(f)
                 writer.writerow([dataset, chunk_rate_str])
+
+        elif selection_mode == "threshold":
+            # threshold 模式：rate 复用为 score(P(yes)) 阈值，保留所有 score >= rate 的 chunk。
+            threshold = rate
+            selected_indices = [i for i in range(len(scores)) if scores[i] >= threshold]
+            # 兜底：若全部低于阈值，至少保留得分最高的一块，避免 context 为空。
+            if not selected_indices:
+                selected_indices = [int(np.argmax(scores))]
+            selected_indices = sorted(selected_indices)
+            selected_chunks = [chunks[i] for i in selected_indices]
+
+            # 记录实际 chunk_rate 并写入 CSV（表头与 topk 一致，按 dataset 覆盖）
+            chunk_rate = len(selected_chunks) / len(chunks) if chunks else 0.0
+            chunk_rate_str = f"{chunk_rate:.4f}"
+            csv_path = os.path.join(result_path, "rate.csv")
+            if not os.path.exists(csv_path):
+                with open(csv_path, "w", newline="", encoding="utf-8") as f:
+                    writer = csv.writer(f)
+                    writer.writerow(["dataset", "chunk_rate"])
+            rows = []
+            dataset_found = False
+            with open(csv_path, "r", newline="", encoding="utf-8") as f:
+                rows = list(csv.reader(f))
+            for i, row in enumerate(rows):
+                if row and row[0] == dataset:
+                    rows[i] = [dataset, chunk_rate_str]
+                    dataset_found = True
+                    break
+            if not dataset_found:
+                rows.append([dataset, chunk_rate_str])
+            with open(csv_path, "w", newline="", encoding="utf-8") as f:
+                csv.writer(f).writerows(rows)
 
         elif selection_mode == "cluster":
             scores_array = np.array(scores).reshape(-1, 1)
