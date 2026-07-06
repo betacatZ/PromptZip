@@ -282,20 +282,6 @@ INSTRUCTION = {
     "vcsum": "检索与会议总结相关的重要内容。",
 }
 
-INSTRUCTION = {
-    "narrativeqa": "Find passages that answer the question.",
-    "qasper": "Find passages that answer the question.",
-    "multifieldqa_en": "Find passages that answer the question.",
-    "multifieldqa_zh": "检索有助于回答问题的相关内容。",
-    "hotpotqa": "Find passages that provide evidence useful for answering the question.",
-    "2wikimqa": "Find passages that provide evidence useful for answering the question.",
-    "musique": "Find passages that support multi-hop reasoning for the question.",
-    "dureader": "检索有助于回答问题的相关内容。",
-    "gov_report": "Find passages containing important information for summarization.",
-    "qmsum": "Find transcript segments relevant to the query.",
-    "multi_news": "Find passages containing key information for summarization.",
-    "vcsum": "检索与会议总结相关的重要内容。",
-}
 
 # dataset2prompt = {
 #     "narrativeqa": "<|im_start|>system\nYou are a helpful assistant. You are given a story, which can be either a novel or a movie script, and a question. Answer the question as concisely as you can, using a single phrase if possible. Do not provide any explanation.\n<|im_end|>\n\n<|im_start|>user\n<context>\n{context}\n</context>\n\nQuestion: {input}\n<|im_end|>\n\n<|im_start|>assistant\n",
@@ -1077,6 +1063,7 @@ if __name__ == "__main__":
                 "topk",
                 "threshold",
                 "pure-topk",
+                "shunt",
             ]:
                 cluster_ratio_txt = os.path.join(run_save_dir, "rate.csv")
                 avg_ratio_txt = os.path.join(run_save_dir, "avg_rate.csv")

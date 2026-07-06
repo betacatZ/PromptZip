@@ -651,6 +651,16 @@ class RerankCompressor(BaseCompressor):
             return max(1, min(int(rate), n))
         return max(1, int(n * rate))
 
+    @staticmethod
+    def _resolve_keep_n_tokens(rate: float, total_tokens: int):
+        """根据 rate 解析目标保留 token 数量（用于 shunt 模式按 token 预算分配）。
+        - rate < 1：按比例保留，返回 max(1, int(total_tokens * rate))。
+        - rate >= 1：按绝对 token 数保留，返回 max(1, int(rate))。
+        """
+        if rate >= 1:
+            return max(1, int(rate))
+        return max(1, int(total_tokens * rate))
+
     def compress(
         self,
         doc: str,
@@ -671,22 +681,26 @@ class RerankCompressor(BaseCompressor):
             old_cuda_vis = os.environ.get("CUDA_VISIBLE_DEVICES", "")
             os.environ["CUDA_VISIBLE_DEVICES"] = self.device_id
 
+        # shunt 模式：chunk_size 表示重要性池(256)的大小，覆盖性池按 chunk_size//2(128) 切分。
+        # 非 shunt 模式：chunk_size 即切分大小，行为不变。
+        cov_chunk_size = max(1, chunk_size // 2) if selection_mode == "shunt" else chunk_size
+
         if chunk_method == "bypunc":
             chunk_end_tokens = self.chunk_end_tokens
-            chunks = self._chunk_context(doc, chunk_end_tokens, chunk_size)
+            chunks = self._chunk_context(doc, chunk_end_tokens, cov_chunk_size)
         elif chunk_method == "narrativeqa":
-            chunks = self.chunk_narrativeqa(doc, self.chunk_end_tokens, chunk_size, min_chunk_size=16)
+            chunks = self.chunk_narrativeqa(doc, self.chunk_end_tokens, cov_chunk_size, min_chunk_size=16)
         else:
             tokenized_doc = self.tokenizer(doc, add_special_tokens=False)
             doc_input_ids = tokenized_doc["input_ids"]
 
             seq_len = len(doc_input_ids)
-            num_chunks = math.ceil(seq_len / chunk_size)
+            num_chunks = math.ceil(seq_len / cov_chunk_size)
 
             chunks = []
             for i in range(num_chunks):
-                start = i * chunk_size
-                end = min((i + 1) * chunk_size, seq_len)
+                start = i * cov_chunk_size
+                end = min((i + 1) * cov_chunk_size, seq_len)
                 chunk_ids = doc_input_ids[start:end]
                 chunks.append(self.tokenizer.decode(chunk_ids))
 
@@ -695,7 +709,12 @@ class RerankCompressor(BaseCompressor):
         representations = []
         need_representations = False
 
+        # shunt 模式：跳过对覆盖性池的前置 reranker 打分（打分在 shunt 分支内对重要性池进行）
+        skip_scoring = selection_mode == "shunt"
+
         for i in range(0, len(chunks), batch_size):
+            if skip_scoring:
+                break
             batch_chunks = chunks[i : i + batch_size]
 
             if self.engine == "hf":
@@ -781,13 +800,12 @@ class RerankCompressor(BaseCompressor):
             representations = torch.cat(representations, dim=0)
 
         if selection_mode == "topk":
-
             n = len(chunks)
             k = self._resolve_keep_n(rate, n)
             # 1/3 uniform
             k_uni = k // 3
             # 2/3 importance
-            k_imp = k - k_uni
+            k_imp = max(1, k - k_uni)
             # -------- uniform sampling --------
             uniform_indices = np.linspace(0, n - 1, k_uni, dtype=int).tolist()
             selected = set(uniform_indices)
@@ -1125,6 +1143,145 @@ class RerankCompressor(BaseCompressor):
             with open(csv_path, "w", newline="", encoding="utf-8") as f:
                 writer = csv.writer(f)
                 writer.writerows(rows)
+
+        elif selection_mode == "shunt":
+            # 分流切块：覆盖性池（chunk_size//2 盲选 1/3 token）+ 重要性池（chunk_size reranker 2/3 token），两池不重叠。
+            # 复用 compress 开头已切好的 chunks（按 cov_chunk_size = chunk_size//2 切分）作为覆盖性池 chunks_cov。
+            chunks_cov = chunks  # 每个 ≤ cov_chunk_size(128) token
+            tok_lens_cov = [
+                len(self.tokenizer.encode(c, add_special_tokens=False)) for c in chunks_cov
+            ]
+            n_cov = len(chunks_cov)
+            total_tok = sum(tok_lens_cov)
+            # 每个 cov chunk 在原文中的起始 token 偏移（用于最终按原文顺序拼接）
+            cov_offsets = []
+            _acc = 0
+            for _l in tok_lens_cov:
+                cov_offsets.append(_acc)
+                _acc += _l
+
+            # ---- 目标 token 预算 ----
+            target_tok = self._resolve_keep_n_tokens(rate, total_tok)
+            target_cov = max(1, target_tok // 3)  # 覆盖性池 1/3
+            # target_imp = target_tok - cov_tok（ importance 池取剩余预算，约 2/3）
+
+            # ---- 步骤 2：覆盖性池均匀盲选（np.linspace，沿用 topk uniform 逻辑）----
+            avg_len_cov = (total_tok / n_cov) if n_cov > 0 else 1
+            k_guess = max(1, int(target_cov // max(avg_len_cov, 1)))
+            uni_idx = list(np.linspace(0, n_cov - 1, k_guess, dtype=int))
+            # 强制保留首块（覆盖性）
+            selected_cov_set = set(uni_idx)
+            if n_cov > 0:
+                selected_cov_set.add(0)
+
+            # 按顺序累加 token，到 target_cov 即止（允许略超）
+            selected_cov_idx = sorted(selected_cov_set)
+            cov_tok = 0
+            cov_cut = []  # 选中的 cov chunk 索引
+            for i in selected_cov_idx:
+                if cov_tok >= target_cov:
+                    break
+                cov_tok += tok_lens_cov[i]
+                cov_cut.append(i)
+            # 覆盖性池选中项：(原文偏移, 文本)
+            picked = [(cov_offsets[i], chunks_cov[i]) for i in cov_cut]
+
+            # ---- 步骤 3：剩余 128-chunk 按顺序合并成 256-chunk ----
+            cov_cut_set = set(cov_cut)
+            remaining_idx = [i for i in range(n_cov) if i not in cov_cut_set]
+            chunks_imp = []  # 每个元素: (起始 cov chunk 的原文偏移, 合并文本)
+            cur_text = ""
+            cur_tok = 0
+            cur_offset = None  # 当前合并块的起始偏移 = 第一个并入的 cov chunk 的偏移
+            for i in remaining_idx:
+                if cur_offset is None:
+                    cur_offset = cov_offsets[i]
+                cur_text += chunks_cov[i]
+                cur_tok += tok_lens_cov[i]
+                if cur_tok >= chunk_size:  # 合并到重要性池大小(256)
+                    chunks_imp.append((cur_offset, cur_text))
+                    cur_text = ""
+                    cur_tok = 0
+                    cur_offset = None
+            # 尾部残余（不足 chunk_size）作为一个块
+            if cur_text:
+                chunks_imp.append((cur_offset, cur_text))
+
+            # ---- 步骤 4：重要性池 reranker 打分 + 贪心选 2/3 token ----
+            target_imp = max(0, target_tok - cov_tok)
+            scores_imp = []
+            imp_picked = []  # (原文偏移, 文本)
+            imp_tok = 0
+            if chunks_imp:
+                imp_texts = [t for _, t in chunks_imp]
+                imp_offsets = [o for o, _ in chunks_imp]
+                # 内联打分循环（复用 hf/vllm 逻辑，避免改动现有分支引入回归）
+                batch_size = 32
+                for i in range(0, len(imp_texts), batch_size):
+                    batch_chunks = imp_texts[i : i + batch_size]
+                    if self.engine == "hf":
+                        batch_pairs = [
+                            self.format_instruction(instruction, query, chunk) for chunk in batch_chunks
+                        ]
+                        batch_inputs = self.process_inputs(batch_pairs)
+                        with torch.no_grad():
+                            batch_scores = self.compute_logits(batch_inputs)
+                        scores_imp.extend(batch_scores)
+                    elif self.engine == "vllm":
+                        if instruction is None:
+                            instruction = "Given a web search query, retrieve relevant passages that answer the query"
+                        queries = [
+                            self.query_template.format(
+                                prefix=self.prefix, instruction=instruction, query=query
+                            )
+                            for _ in range(len(batch_chunks))
+                        ]
+                        documents = [
+                            self.document_template.format(doc=doc, suffix=self.suffix)
+                            for doc in batch_chunks
+                        ]
+                        outputs = self.model.score(queries, documents)
+                        batch_scores = [output.outputs.score for output in outputs]
+                        scores_imp.extend(batch_scores)
+
+                tok_lens_imp = [
+                    len(self.tokenizer.encode(c, add_special_tokens=False)) for c in imp_texts
+                ]
+                # 按 score 降序贪心选，直到累计 token >= target_imp
+                order = sorted(range(len(imp_texts)), key=lambda j: scores_imp[j], reverse=True)
+                for j in order:
+                    if imp_tok >= target_imp:
+                        break
+                    imp_tok += tok_lens_imp[j]
+                    imp_picked.append((imp_offsets[j], imp_texts[j]))
+
+            # ---- 步骤 5：按原文偏移统一排序后拼接 ----
+            merged = picked + imp_picked  # [(offset, text), ...]
+            merged.sort(key=lambda x: x[0])
+            selected_chunks = [t for _, t in merged]
+            scores = scores_imp  # shunt 模式下返回重要性池 score
+
+            # 记录实际 chunk_rate 并写入 CSV（复用 topk 分支表头，按 dataset 覆盖）
+            chunk_rate = (cov_tok + imp_tok) / total_tok if total_tok > 0 else 0.0
+            chunk_rate_str = f"{chunk_rate:.4f}"
+            csv_path = os.path.join(result_path, "rate.csv")
+            if not os.path.exists(csv_path):
+                with open(csv_path, "w", newline="", encoding="utf-8") as f:
+                    writer = csv.writer(f)
+                    writer.writerow(["dataset", "chunk_rate"])
+            rows = []
+            dataset_found = False
+            with open(csv_path, "r", newline="", encoding="utf-8") as f:
+                rows = list(csv.reader(f))
+            for i, row in enumerate(rows):
+                if row and row[0] == dataset:
+                    rows[i] = [dataset, chunk_rate_str]
+                    dataset_found = True
+                    break
+            if not dataset_found:
+                rows.append([dataset, chunk_rate_str])
+            with open(csv_path, "w", newline="", encoding="utf-8") as f:
+                csv.writer(f).writerows(rows)
 
         # hf engine 推理后恢复 CUDA_VISIBLE_DEVICES
         if self.engine == "hf":

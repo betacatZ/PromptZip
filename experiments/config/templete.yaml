@@ -16,7 +16,8 @@ reranker_config:
   rate: [0.3,0.4,0.5,0.6]
   device_id: 0
   engine: vllm
-  selection_mode: topk # topk, pure-topk, cluster, topp, cluster-zscore, threshold
+  selection_mode: topk # topk, pure-topk, cluster, topp, cluster-zscore, threshold, shunt
+  # shunt 模式下：chunk_size 为重要性池大小(如 256)，覆盖性池按 chunk_size//2(128) 切分
 
 compressor_config:
   model_type: null # # longllmlingua,llmlingua2,llm, rerank, PPL, null
