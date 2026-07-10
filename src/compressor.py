@@ -863,15 +863,33 @@ class RerankCompressor(BaseCompressor):
                 writer = csv.writer(f)
                 writer.writerows(rows)
         elif selection_mode == "pure-topk":
-            # pure-topk：纯按 score 取前 k 个 chunk，不做均匀采样、不强制保留首尾。
+            # pure-topk：纯按 score 降序贪心选，至少保留 rate 比例的 token（按 token 预算）。
+            # rate<1 为 token 比例（如 0.3 表示至少保留 30% token），>=1 为绝对 token 数。
             n = len(chunks)
-            k = self._resolve_keep_n(rate, n)
-            topk_indices = sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)[:k]
-            selected_indices = sorted(topk_indices)
+            # 每个 chunk 的 token 长度
+            tok_lens = [len(self.tokenizer.encode(c, add_special_tokens=False)) for c in chunks]
+            total_tok = sum(tok_lens)
+            target_tok = self._resolve_keep_n_tokens(rate, total_tok)
+
+            # 按 score 降序贪心选，累计 token 达到 target_tok 即止（允许略超，到 chunk 边界）
+            order = sorted(range(n), key=lambda i: scores[i], reverse=True)
+            selected_indices = []
+            sel_tok = 0
+            for i in order:
+                if sel_tok >= target_tok:
+                    break
+                sel_tok += tok_lens[i]
+                selected_indices.append(i)
+            # 兜底：若全部 score 太低导致一个都没选（理论上不会，target_tok>=1），至少选得分最高的一块
+            if not selected_indices and n > 0:
+                selected_indices.append(order[0] if order else 0)
+                sel_tok = tok_lens[selected_indices[0]]
+
+            selected_indices = sorted(selected_indices)
             selected_chunks = [chunks[i] for i in selected_indices]
 
-            # 记录实际 chunk_rate 并写入 CSV（表头与 topk 一致，按 dataset 覆盖）
-            chunk_rate = len(selected_chunks) / len(chunks) if chunks else 0.0
+            # 记录实际 chunk_rate（按 token 计算）并写入 CSV（表头与 topk 一致，按 dataset 覆盖）
+            chunk_rate = sel_tok / total_tok if total_tok > 0 else 0.0
             chunk_rate_str = f"{chunk_rate:.4f}"
             csv_path = os.path.join(result_path, "rate.csv")
             if not os.path.exists(csv_path):
