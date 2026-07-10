@@ -661,6 +661,17 @@ class RerankCompressor(BaseCompressor):
             return max(1, int(rate))
         return max(1, int(total_tokens * rate))
 
+    @staticmethod
+    def _parse_ratio(value):
+        """把 coverage_ratio 解析为 float，支持小数(0.3)、整数比例(1)、分数字符串("1/3")。
+        yaml 里 `1/3` 会被解析成字符串 "1/3"，用 fractions.Fraction 精确转成 float。
+        """
+        from fractions import Fraction
+
+        if isinstance(value, str):
+            return float(Fraction(value))
+        return float(value)
+
     def compress(
         self,
         doc: str,
@@ -672,7 +683,12 @@ class RerankCompressor(BaseCompressor):
         chunk_method="bypunc",
         selection_mode="topk",
         result_path="",
+        coverage_ratio: float = 1 / 3,
+        coverage_chunk_size: int | None = None,
     ):
+        # coverage_ratio 支持分数字符串（如 yaml 里的 "1/3"），统一转成 float
+        coverage_ratio = self._parse_ratio(coverage_ratio)
+
         if query == "":
             query = "Summarize the document"
 
@@ -681,9 +697,12 @@ class RerankCompressor(BaseCompressor):
             old_cuda_vis = os.environ.get("CUDA_VISIBLE_DEVICES", "")
             os.environ["CUDA_VISIBLE_DEVICES"] = self.device_id
 
-        # shunt 模式：chunk_size 表示重要性池(256)的大小，覆盖性池按 chunk_size//2(128) 切分。
+        # shunt 模式：chunk_size 表示重要性池(256)的大小，覆盖性池按 coverage_chunk_size 切分（默认 chunk_size//2）。
         # 非 shunt 模式：chunk_size 即切分大小，行为不变。
-        cov_chunk_size = max(1, chunk_size // 2) if selection_mode == "shunt" else chunk_size
+        if selection_mode == "shunt":
+            cov_chunk_size = coverage_chunk_size if coverage_chunk_size is not None else max(1, chunk_size // 2)
+        else:
+            cov_chunk_size = chunk_size
 
         if chunk_method == "bypunc":
             chunk_end_tokens = self.chunk_end_tokens
@@ -802,9 +821,9 @@ class RerankCompressor(BaseCompressor):
         if selection_mode == "topk":
             n = len(chunks)
             k = self._resolve_keep_n(rate, n)
-            # 1/3 uniform
-            k_uni = k // 3
-            # 2/3 importance
+            # 覆盖性采样数（按 coverage_ratio 比例）
+            k_uni = max(1, int(k * coverage_ratio)) if k > 1 else 1
+            # 重要性采样数
             k_imp = max(1, k - k_uni)
             # -------- uniform sampling --------
             uniform_indices = np.linspace(0, n - 1, k_uni, dtype=int).tolist()
@@ -1145,9 +1164,9 @@ class RerankCompressor(BaseCompressor):
                 writer.writerows(rows)
 
         elif selection_mode == "shunt":
-            # 分流切块：覆盖性池（chunk_size//2 盲选 1/3 token）+ 重要性池（chunk_size reranker 2/3 token），两池不重叠。
-            # 复用 compress 开头已切好的 chunks（按 cov_chunk_size = chunk_size//2 切分）作为覆盖性池 chunks_cov。
-            chunks_cov = chunks  # 每个 ≤ cov_chunk_size(128) token
+            # 分流切块：覆盖性池（coverage_chunk_size 盲选 coverage_ratio 比例 token）+ 重要性池（chunk_size reranker 选剩余 token），两池不重叠。
+            # 复用 compress 开头已切好的 chunks（按 cov_chunk_size 切分）作为覆盖性池 chunks_cov。
+            chunks_cov = chunks  # 每个 ≤ cov_chunk_size token
             tok_lens_cov = [
                 len(self.tokenizer.encode(c, add_special_tokens=False)) for c in chunks_cov
             ]
@@ -1162,8 +1181,8 @@ class RerankCompressor(BaseCompressor):
 
             # ---- 目标 token 预算 ----
             target_tok = self._resolve_keep_n_tokens(rate, total_tok)
-            target_cov = max(1, target_tok // 3)  # 覆盖性池 1/3
-            # target_imp = target_tok - cov_tok（ importance 池取剩余预算，约 2/3）
+            target_cov = max(1, int(target_tok * coverage_ratio))  # 覆盖性池按 coverage_ratio 比例
+            # target_imp = target_tok - cov_tok（ importance 池取剩余预算）
 
             # ---- 步骤 2：覆盖性池均匀盲选（np.linspace，沿用 topk uniform 逻辑）----
             avg_len_cov = (total_tok / n_cov) if n_cov > 0 else 1

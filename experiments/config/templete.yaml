@@ -17,7 +17,9 @@ reranker_config:
   device_id: 0
   engine: vllm
   selection_mode: topk # topk, pure-topk, cluster, topp, cluster-zscore, threshold, shunt
-  # shunt 模式下：chunk_size 为重要性池大小(如 256)，覆盖性池按 chunk_size//2(128) 切分
+  # shunt 模式下：chunk_size 为重要性池大小(如 256)，覆盖性池按 coverage_chunk_size 切分（默认 chunk_size//2）
+  # coverage_ratio: 0.3  # topk/shunt 覆盖性采样占比（默认 1/3），如 0.3 表示 30% 预算给覆盖性、70% 给重要性
+  # coverage_chunk_size: 128  # 仅 shunt 模式：覆盖性池切分大小，默认 chunk_size//2
 
 compressor_config:
   model_type: null # # longllmlingua,llmlingua2,llm, rerank, PPL, null

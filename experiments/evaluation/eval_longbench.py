@@ -667,6 +667,8 @@ async def predict(yaml_args, json_path, enable_test=False):
                                 chunk_method="bypunc",
                                 selection_mode=run_config["reranker_config"].get("selection_mode", "topk"),
                                 result_path=run_save_dir,
+                                coverage_ratio=run_config["reranker_config"].get("coverage_ratio", 1 / 3),
+                                coverage_chunk_size=run_config["reranker_config"].get("coverage_chunk_size"),
                             )
                         context = "".join(select_chunks)
                         compressed_context = context
