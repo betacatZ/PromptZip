@@ -31,6 +31,7 @@ from metrics import (
     qa_f1_zh_score,
     rouge_score,
     rouge_zh_score,
+    sentence_similarity,
 )
 
 from src.compressor import (
@@ -74,6 +75,14 @@ dataset2metric = {
     "passage_retrieval_zh": retrieval_zh_score,
     "lcc": code_sim_score,
     "repobench-p": code_sim_score,
+}
+
+# 额外指标：对部分数据集在原指标之外同时计算 sentence_similarity
+dataset2extra_metric = {
+    "gov_report": sentence_similarity,
+    "qmsum": sentence_similarity,
+    "multi_news": sentence_similarity,
+    "vcsum": sentence_similarity,
 }
 
 
@@ -379,7 +388,10 @@ def scorer_e(dataset, predictions, answers, lengths, all_classes):
 
 
 def scorer(dataset, prediction, ground_truths, all_classes):
-    """计算单个样本的 score"""
+    """计算单个样本的 score（主指标），以及额外指标（如 sentence_similarity，仅部分数据集）。
+
+    返回 dict: {"score": float, "sim": float | None}
+    """
     # 特定数据集需要清理 prediction
     if dataset in [
         "triviaqa",
@@ -399,7 +411,14 @@ def scorer(dataset, prediction, ground_truths, all_classes):
     score = 0.0
     for ground_truth in ground_truths:
         score = max(score, dataset2metric[dataset](prediction, ground_truth, all_classes=all_classes))
-    return score
+
+    # 额外指标：对配置了 dataset2extra_metric 的数据集同时算 sentence_similarity
+    sim = None
+    if dataset in dataset2extra_metric:
+        sim = 0.0
+        for ground_truth in ground_truths:
+            sim = max(sim, dataset2extra_metric[dataset](prediction, ground_truth))
+    return {"score": score, "sim": sim}
 
 
 def eval(json_path):
@@ -407,8 +426,9 @@ def eval(json_path):
     with open(json_path, "r", encoding="utf-8") as f:
         results = json.load(f)
 
-    # 按 task 分类收集每个 task 的 scores
+    # 按 task 分类收集每个 task 的 scores 与 extra 指标
     task_scores = defaultdict(list)
+    task_sims = defaultdict(list)
 
     # 遍历每个样本
     for key, data in results.items():
@@ -417,20 +437,29 @@ def eval(json_path):
         ground_truths = data["answers"]
         all_classes = data.get("all_classes", None)
 
-        # 计算样本 score
-        score = scorer(task, prediction, ground_truths, all_classes)
+        # 计算样本 score（含额外指标 sim）
+        result = scorer(task, prediction, ground_truths, all_classes)
+        score = result["score"]
+        sim = result["sim"]
 
         # 写回 JSON
         results[key]["score"] = score
+        if sim is not None:
+            results[key]["sim"] = sim
 
-        # 保存 task 层面的 score
+        # 保存 task 层面的 score / sim
         task_scores[task].append(score)
+        if sim is not None:
+            task_sims[task].append(sim)
 
     # 计算每个 task 的平均分
     scores = {}
     for task, s_list in task_scores.items():
         avg_task_score = sum(s_list) / len(s_list)
-        scores[task] = {"score": round(avg_task_score * 100, 2), "num": len(s_list)}
+        entry = {"score": round(avg_task_score * 100, 2), "num": len(s_list)}
+        if task in task_sims and task_sims[task]:
+            entry["sim"] = round(100 * (sum(task_sims[task]) / len(task_sims[task])), 2)
+        scores[task] = entry
 
     score_list = [s["score"] for s in scores.values()]
 
@@ -915,18 +944,20 @@ def write_score(run_save_dir, score_dict):
     output_path = os.path.join(run_save_dir, "score.csv")
     with open(output_path, "w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
-        writer.writerow(["dataset", "score", "num"])  # 写入表头
+        writer.writerow(["dataset", "score", "sim", "num"])  # 写入表头
 
         # 按照数据集写入每个数据集的分数和数量
         for group, _ in group_averages:
             # 先写入组的数据集分数
             for dataset in group:
                 if dataset in score_dict:
-                    writer.writerow([dataset, score_dict[dataset]["score"], score_dict[dataset]["num"]])
+                    sim = score_dict[dataset].get("sim")
+                    sim_str = "" if sim is None else sim
+                    writer.writerow([dataset, score_dict[dataset]["score"], sim_str, score_dict[dataset]["num"]])
 
             group_avg = next(avg for g, avg in group_averages if g == group)  # 获取该组的均值
             group_avg = round(group_avg, 2)
-            writer.writerow(["Avg", group_avg, ""])  # 每个组后面写上均值
+            writer.writerow(["Avg", group_avg, "", ""])  # 每个组后面写上均值
 
         # 计算总的平均值（所有数据集的均值）
         all_scores = [
@@ -935,7 +966,7 @@ def write_score(run_save_dir, score_dict):
             if isinstance(score_dict[dataset], dict) and "score" in score_dict[dataset]
         ]
         overall_avg = sum(all_scores) / len(all_scores) if all_scores else 0
-        writer.writerow(["Avg (Overall)", overall_avg, ""])
+        writer.writerow(["Avg (Overall)", overall_avg, "", ""])
 
     print(f"结果写入: {output_path}")
 
