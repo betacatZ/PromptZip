@@ -366,25 +366,39 @@ dataset2maxlen = {
 
 
 def scorer_e(dataset, predictions, answers, lengths, all_classes):
+    """按输入长度分桶（0-4k / 4-8k / 8k+）计算 score 与 sim。
+    返回 {"0-4k": {"score":, "sim":}, "4-8k": {...}, "8k+": {...}}。
+    sim 仅对 dataset2extra_metric 配置的数据集（gov_report/qmsum/multi_news/vcsum）计算。
+    """
     scores = {"0-4k": [], "4-8k": [], "8k+": []}
-    for prediction, ground_truths, length in zip(predictions, answers, lengths):
-        score = 0.0
-        if dataset in ["triviaqa", "samsum"]:
-            prediction = prediction.lstrip("\n").split("\n")[0]
+    sims = {"0-4k": [], "4-8k": [], "8k+": []}
+    for (prediction, ground_truths, length) in zip(predictions, answers, lengths):
+        score = 0.
+        if dataset in ["trec", "triviaqa", "samsum", "lsht"]:
+            prediction = prediction.lstrip('\n').split('\n')[0]
+        sim = None
         for ground_truth in ground_truths:
-            score = max(
-                score,
-                dataset2metric[dataset](prediction, ground_truth, all_classes=all_classes),
-            )
+            score = max(score, dataset2metric[dataset](prediction, ground_truth, all_classes=all_classes))
+            if dataset in dataset2extra_metric:
+                s = dataset2extra_metric[dataset](prediction, ground_truth)
+                if s is not None:
+                    sim = s if sim is None else max(sim, s)
         if length < 4000:
-            scores["0-4k"].append(score)
+            bucket = "0-4k"
         elif length < 8000:
-            scores["4-8k"].append(score)
+            bucket = "4-8k"
         else:
-            scores["8k+"].append(score)
-    for key in scores.keys():
-        scores[key] = round(100 * np.mean(scores[key]), 2)
-    return scores
+            bucket = "8k+"
+        scores[bucket].append(score)
+        if sim is not None:
+            sims[bucket].append(sim)
+    # 桶内平均
+    result = {}
+    for key in scores:
+        avg_score = round(100 * np.mean(scores[key]), 2) if scores[key] else 0.0
+        avg_sim = round(100 * (sum(sims[key]) / len(sims[key])), 2) if sims[key] else None
+        result[key] = {"score": avg_score, "sim": avg_sim}
+    return result
 
 
 def scorer(dataset, prediction, ground_truths, all_classes):
@@ -415,9 +429,11 @@ def scorer(dataset, prediction, ground_truths, all_classes):
     # 额外指标：对配置了 dataset2extra_metric 的数据集同时算 sentence_similarity
     sim = None
     if dataset in dataset2extra_metric:
-        sim = 0.0
         for ground_truth in ground_truths:
-            sim = max(sim, dataset2extra_metric[dataset](prediction, ground_truth))
+            s = dataset2extra_metric[dataset](prediction, ground_truth)
+            if s is None:
+                continue  # 模型不可用，跳过
+            sim = s if sim is None else max(sim, s)
     return {"score": score, "sim": sim}
 
 
@@ -429,6 +445,11 @@ def eval(json_path):
     # 按 task 分类收集每个 task 的 scores 与 extra 指标
     task_scores = defaultdict(list)
     task_sims = defaultdict(list)
+    # scorer_e 需要的 per-task 样本列表
+    task_predictions = defaultdict(list)
+    task_answers = defaultdict(list)
+    task_lengths = defaultdict(list)
+    task_all_classes = {}
 
     # 遍历每个样本
     for key, data in results.items():
@@ -452,6 +473,13 @@ def eval(json_path):
         if sim is not None:
             task_sims[task].append(sim)
 
+        # 收集 scorer_e 所需的样本列表
+        task_predictions[task].append(prediction)
+        task_answers[task].append(ground_truths)
+        task_lengths[task].append(data.get("length", 0))
+        if task not in task_all_classes:
+            task_all_classes[task] = all_classes
+
     # 计算每个 task 的平均分
     scores = {}
     for task, s_list in task_scores.items():
@@ -459,6 +487,14 @@ def eval(json_path):
         entry = {"score": round(avg_task_score * 100, 2), "num": len(s_list)}
         if task in task_sims and task_sims[task]:
             entry["sim"] = round(100 * (sum(task_sims[task]) / len(task_sims[task])), 2)
+        # 按长度分桶的 score/sim
+        entry["length_bucket"] = scorer_e(
+            task,
+            task_predictions[task],
+            task_answers[task],
+            task_lengths[task],
+            task_all_classes.get(task),
+        )
         scores[task] = entry
 
     score_list = [s["score"] for s in scores.values()]
@@ -969,6 +1005,29 @@ def write_score(run_save_dir, score_dict):
         writer.writerow(["Avg (Overall)", overall_avg, "", ""])
 
     print(f"结果写入: {output_path}")
+
+    # 写入 length_score.csv（按长度分桶 0-4k/4-8k/8k+ 的 score 与 sim）
+    bucket_path = os.path.join(run_save_dir, "length_score.csv")
+    with open(bucket_path, "w", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        writer.writerow(["dataset", "0-4k", "0-4k_sim", "4-8k", "4-8k_sim", "8k+", "8k+_sim"])
+        for dataset in score_dict:
+            if not isinstance(score_dict[dataset], dict):
+                continue
+            b = score_dict[dataset].get("length_bucket", {})
+
+            def cell(key, sub):
+                v = b.get(key, {}).get(sub) if isinstance(b.get(key), dict) else None
+                return "" if v is None else v
+
+            writer.writerow([
+                dataset,
+                cell("0-4k", "score"), cell("0-4k", "sim"),
+                cell("4-8k", "score"), cell("4-8k", "sim"),
+                cell("8k+", "score"), cell("8k+", "sim"),
+            ])
+
+    print(f"结果写入: {bucket_path}")
 
 
 if __name__ == "__main__":
