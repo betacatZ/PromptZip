@@ -365,38 +365,29 @@ dataset2maxlen = {
 }
 
 
-def scorer_e(dataset, predictions, answers, lengths, all_classes):
-    """按输入长度分桶（0-4k / 4-8k / 8k+）计算 score 与 sim。
+def scorer_e(dataset, scores, sims, lengths):
+    """按输入长度分桶（0-4k / 4-8k / 8k+）汇总已算好的 score 与 sim。
+    score/sim 由 scorer 预先计算（同口径），这里只做分桶 + 桶内平均，不重复算分。
     返回 {"0-4k": {"score":, "sim":}, "4-8k": {...}, "8k+": {...}}。
-    sim 仅对 dataset2extra_metric 配置的数据集（gov_report/qmsum/multi_news/vcsum）计算。
+    sim=None 的样本不参与桶内 sim 平均（非 4 数据集或模型不可用）。
     """
-    scores = {"0-4k": [], "4-8k": [], "8k+": []}
-    sims = {"0-4k": [], "4-8k": [], "8k+": []}
-    for (prediction, ground_truths, length) in zip(predictions, answers, lengths):
-        score = 0.
-        if dataset in ["trec", "triviaqa", "samsum", "lsht"]:
-            prediction = prediction.lstrip('\n').split('\n')[0]
-        sim = None
-        for ground_truth in ground_truths:
-            score = max(score, dataset2metric[dataset](prediction, ground_truth, all_classes=all_classes))
-            if dataset in dataset2extra_metric:
-                s = dataset2extra_metric[dataset](prediction, ground_truth)
-                if s is not None:
-                    sim = s if sim is None else max(sim, s)
+    bucket_scores = {"0-4k": [], "4-8k": [], "8k+": []}
+    bucket_sims = {"0-4k": [], "4-8k": [], "8k+": []}
+    for score, sim, length in zip(scores, sims, lengths):
         if length < 4000:
-            bucket = "0-4k"
+            key = "0-4k"
         elif length < 8000:
-            bucket = "4-8k"
+            key = "4-8k"
         else:
-            bucket = "8k+"
-        scores[bucket].append(score)
+            key = "8k+"
+        bucket_scores[key].append(score)
         if sim is not None:
-            sims[bucket].append(sim)
+            bucket_sims[key].append(sim)
     # 桶内平均
     result = {}
-    for key in scores:
-        avg_score = round(100 * np.mean(scores[key]), 2) if scores[key] else 0.0
-        avg_sim = round(100 * (sum(sims[key]) / len(sims[key])), 2) if sims[key] else None
+    for key in bucket_scores:
+        avg_score = round(100 * np.mean(bucket_scores[key]), 2) if bucket_scores[key] else 0.0
+        avg_sim = round(100 * (sum(bucket_sims[key]) / len(bucket_sims[key])), 2) if bucket_sims[key] else None
         result[key] = {"score": avg_score, "sim": avg_sim}
     return result
 
@@ -445,11 +436,10 @@ def eval(json_path):
     # 按 task 分类收集每个 task 的 scores 与 extra 指标
     task_scores = defaultdict(list)
     task_sims = defaultdict(list)
-    # scorer_e 需要的 per-task 样本列表
-    task_predictions = defaultdict(list)
-    task_answers = defaultdict(list)
+    # scorer_e 按长度分桶所需的 per-sample 列表（score/sim 已由 scorer 算好，不重复算）
+    task_sample_scores = defaultdict(list)
+    task_sample_sims = defaultdict(list)
     task_lengths = defaultdict(list)
-    task_all_classes = {}
 
     # 遍历每个样本
     for key, data in results.items():
@@ -473,12 +463,10 @@ def eval(json_path):
         if sim is not None:
             task_sims[task].append(sim)
 
-        # 收集 scorer_e 所需的样本列表
-        task_predictions[task].append(prediction)
-        task_answers[task].append(ground_truths)
+        # 收集 scorer_e 所需的 per-sample 列表
+        task_sample_scores[task].append(score)
+        task_sample_sims[task].append(sim)  # None 也会保留，scorer_e 内部跳过
         task_lengths[task].append(data.get("length", 0))
-        if task not in task_all_classes:
-            task_all_classes[task] = all_classes
 
     # 计算每个 task 的平均分
     scores = {}
@@ -487,13 +475,12 @@ def eval(json_path):
         entry = {"score": round(avg_task_score * 100, 2), "num": len(s_list)}
         if task in task_sims and task_sims[task]:
             entry["sim"] = round(100 * (sum(task_sims[task]) / len(task_sims[task])), 2)
-        # 按长度分桶的 score/sim
+        # 按长度分桶的 score/sim（复用 scorer 已算好的结果，不重复调用模型）
         entry["length_bucket"] = scorer_e(
             task,
-            task_predictions[task],
-            task_answers[task],
+            task_sample_scores[task],
+            task_sample_sims[task],
             task_lengths[task],
-            task_all_classes.get(task),
         )
         scores[task] = entry
 
