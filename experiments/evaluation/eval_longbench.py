@@ -117,28 +117,28 @@ dataset2prompt = {
             "role": "system",
             "content": "You are a helpful assistant. You are given a story, which can be either a novel or a movie script, and a question. Answer the question as concisely as you can, using a single phrase if possible. Do not provide any explanation.",
         },
-        {"role": "user", "content": "<context>{context}</context>\n\nQuestion: {input}"},
+        {"role": "user", "content": "<content>{context}</content>\n\nQuestion: {input}"},
     ],
     "qasper": [
         {
             "role": "system",
             "content": 'You are a scientific assistant. Answer the question based on the article. If the question cannot be answered, write "unanswerable". For yes/no questions, respond with "yes", "no", or "unanswerable". Do not provide any explanations.',
         },
-        {"role": "user", "content": "<context>{context}</context>\n\nQuestion: {input}"},
+        {"role": "user", "content": "<content>{context}</content>\n\nQuestion: {input}"},
     ],
     "multifieldqa_en": [
         {
             "role": "system",
             "content": "You are a helpful assistant. Answer the question based on the given text. Only provide the answer and do not give any additional words.",
         },
-        {"role": "user", "content": "<context>{context}</context>\n\nQuestion: {input}"},
+        {"role": "user", "content": "<content>{context}</content>\n\nQuestion: {input}"},
     ],
     "multifieldqa_zh": [
         {
             "role": "system",
             "content": "你是一个中文问答助手。请根据文章简洁地回答问题，只提供答案，不要额外解释。",
         },
-        {"role": "user", "content": "<context>{context}</context>\n\n问题：{input}"},
+        {"role": "user", "content": "<content>{context}</content>\n\n问题：{input}"},
     ],
     "hotpotqa": [
         {
@@ -147,7 +147,7 @@ dataset2prompt = {
         },
         {
             "role": "user",
-            "content": "The following are the given passages:\n<context>{context}</context>\n\nAnswer the question based on the given passages. Only give me the answer and do not output any other words.\n\nQuestion: {input}",
+            "content": "The following are the given passages:\n<content>{context}</content>\n\nAnswer the question based on the given passages. Only give me the answer and do not output any other words.\n\nQuestion: {input}",
         },
     ],
     "2wikimqa": [
@@ -157,7 +157,7 @@ dataset2prompt = {
         },
         {
             "role": "user",
-            "content": "The following are the given passages:\n<context>{context}</context>\n\nAnswer the question based on the given passages. Only give me the answer and do not output any other words.\n\nQuestion: {input}",
+            "content": "The following are the given passages:\n<content>{context}</content>\n\nAnswer the question based on the given passages. Only give me the answer and do not output any other words.\n\nQuestion: {input}",
         },
     ],
     "musique": [
@@ -167,7 +167,7 @@ dataset2prompt = {
         },
         {
             "role": "user",
-            "content": "The following are the given passages:\n<context>{context}</context>\n\nAnswer the question based on the given passages. Only give me the answer and do not output any other words.\n\nQuestion: {input}",
+            "content": "The following are the given passages:\n<content>{context}</content>\n\nAnswer the question based on the given passages. Only give me the answer and do not output any other words.\n\nQuestion: {input}",
         },
     ],
     "dureader": [
@@ -175,70 +175,70 @@ dataset2prompt = {
             "role": "system",
             "content": "你是一个中文问答助手。请根据给定文章回答问题。只给出答案，不要解释。",
         },
-        {"role": "user", "content": "<context>{context}</context>\n\n问题：{input}"},
+        {"role": "user", "content": "<content>{context}</content>\n\n问题：{input}"},
     ],
     "gov_report": [
         {
             "role": "system",
             "content": "You are a helpful assistant. You are given a report by a government agency. Write a one-page summary of the report.",
         },
-        {"role": "user", "content": "<context>{context}</context>\n\nSummary:"},
+        {"role": "user", "content": "<content>{context}</content>\n\nSummary:"},
     ],
     "qmsum": [
         {
             "role": "system",
             "content": "You are a helpful assistant. Answer the query based on the meeting transcript in one or more sentences.",
         },
-        {"role": "user", "content": "<context>{context}</context>\n\nQuery: {input}"},
+        {"role": "user", "content": "<content>{context}</content>\n\nQuery: {input}"},
     ],
     "multi_news": [
         {
             "role": "system",
             "content": "You are a helpful assistant. Read the news passages and write a one-page summary. Do not provide additional explanations.",
         },
-        {"role": "user", "content": "<context>{context}</context>\n\nPlease provide the summary below."},
+        {"role": "user", "content": "<content>{context}</content>\n\nPlease provide the summary below."},
     ],
     "vcsum": [
         {
             "role": "system",
             "content": "你是会议总结助手。请根据会议记录写一段总结，不要解释。",
         },
-        {"role": "user", "content": "<context>{context}</context>\n\n会议总结："},
+        {"role": "user", "content": "<content>{context}</content>\n\n会议总结："},
     ],
     "trec": [
         {
             "role": "system",
             "content": "You are a classification assistant. Determine the type of the question based on the given examples. Only output the type/category.",
         },
-        {"role": "user", "content": "<context>{context}</context>\n\nQuestion: {input}"},
+        {"role": "user", "content": "<content>{context}</content>\n\nQuestion: {input}"},
     ],
     "triviaqa": [
         {
             "role": "system",
             "content": "You are a helpful assistant. Answer the question based on the given passage. Only give the answer and do not output any other words.",
         },
-        {"role": "user", "content": "<context>{context}</context>\n\n{input}"},
+        {"role": "user", "content": "<content>{context}</content>\n\n{input}"},
     ],
     "samsum": [
         {
             "role": "system",
             "content": "You are a helpful assistant. Summarize the dialogue into a few short sentences. Do not provide explanations or extra words.",
         },
-        {"role": "user", "content": "<context>{context}</context>\n\n{input}"},
+        {"role": "user", "content": "<content>{context}</content>\n\n{input}"},
     ],
     "lsht": [
         {
             "role": "system",
             "content": "你是中文分类助手。根据给定的新闻内容，判断新闻的类别。只输出类别名称。",
         },
-        {"role": "user", "content": "<context>{context}</context>\n\n{input}"},
+        {"role": "user", "content": "<content>{context}</content>\n\n{input}"},
     ],
     "passage_count": [
         {
             "role": "system",
             "content": "You are a helpful assistant. Count how many unique paragraphs there are in the given set of paragraphs after removing duplicates. Only output the number.",
         },
-        {"role": "user", "content": "<context>{context}</context>"},
+        {"role": "user", "content": "<content>{context}</content>"},
     ],
     "passage_retrieval_en": [
         {
