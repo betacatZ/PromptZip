@@ -439,7 +439,8 @@ def eval(json_path):
     # scorer_e 按长度分桶所需的 per-sample 列表（score/sim 已由 scorer 算好，不重复算）
     task_sample_scores = defaultdict(list)
     task_sample_sims = defaultdict(list)
-    task_lengths = defaultdict(list)
+    task_lengths = defaultdict(list)          # 原文字符数（length 字段）
+    task_tok_lengths = defaultdict(list)     # 原文 token 数（context_tok_len 字段）
 
     # 遍历每个样本
     for key, data in results.items():
@@ -467,6 +468,7 @@ def eval(json_path):
         task_sample_scores[task].append(score)
         task_sample_sims[task].append(sim)  # None 也会保留，scorer_e 内部跳过
         task_lengths[task].append(data.get("length", 0))
+        task_tok_lengths[task].append(data.get("context_tok_len", 0))
 
     # 计算每个 task 的平均分
     scores = {}
@@ -475,12 +477,19 @@ def eval(json_path):
         entry = {"score": round(avg_task_score * 100, 2), "num": len(s_list)}
         if task in task_sims and task_sims[task]:
             entry["sim"] = round(100 * (sum(task_sims[task]) / len(task_sims[task])), 2)
-        # 按长度分桶的 score/sim（复用 scorer 已算好的结果，不重复调用模型）
+        # 按原文字符数长度分桶的 score/sim
         entry["length_bucket"] = scorer_e(
             task,
             task_sample_scores[task],
             task_sample_sims[task],
             task_lengths[task],
+        )
+        # 按原文 token 数长度分桶的 score/sim
+        entry["token_length_bucket"] = scorer_e(
+            task,
+            task_sample_scores[task],
+            task_sample_sims[task],
+            task_tok_lengths[task],
         )
         scores[task] = entry
 
@@ -838,6 +847,8 @@ async def predict(yaml_args, json_path, enable_test=False):
 
             for idx, sample in enumerate(batch):
                 sample_key = f"{sample['dataset']}_{sample['_id']}"
+                # 原文 context 的 token 数（用于按 token 长度分桶统计）
+                context_tok_len = len(tokenizer.encode(sample["context"], add_special_tokens=False))
                 results[sample_key] = {
                     "input": sample["input"],
                     "pred": preds[idx].outputs[0].text,
@@ -846,6 +857,7 @@ async def predict(yaml_args, json_path, enable_test=False):
                     "idx": sample_key,
                     "all_classes": sample["all_classes"],
                     "length": sample["length"],
+                    "context_tok_len": context_tok_len,
                 }
 
             os.makedirs(os.path.dirname(json_path), exist_ok=True)
@@ -1015,6 +1027,29 @@ def write_score(run_save_dir, score_dict):
             ])
 
     print(f"结果写入: {bucket_path}")
+
+    # 写入 token_length_score.csv（按原文 token 数 0-4k/4-8k/8k+ 分桶的 score 与 sim）
+    tok_bucket_path = os.path.join(run_save_dir, "token_length_score.csv")
+    with open(tok_bucket_path, "w", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        writer.writerow(["dataset", "0-4k", "0-4k_sim", "4-8k", "4-8k_sim", "8k+", "8k+_sim"])
+        for dataset in score_dict:
+            if not isinstance(score_dict[dataset], dict):
+                continue
+            b = score_dict[dataset].get("token_length_bucket", {})
+
+            def cell_t(key, sub):
+                v = b.get(key, {}).get(sub) if isinstance(b.get(key), dict) else None
+                return "" if v is None else v
+
+            writer.writerow([
+                dataset,
+                cell_t("0-4k", "score"), cell_t("0-4k", "sim"),
+                cell_t("4-8k", "score"), cell_t("4-8k", "sim"),
+                cell_t("8k+", "score"), cell_t("8k+", "sim"),
+            ])
+
+    print(f"结果写入: {tok_bucket_path}")
 
 
 if __name__ == "__main__":
