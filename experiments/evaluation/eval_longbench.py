@@ -369,7 +369,10 @@ def scorer_e(dataset, scores, sims, lengths):
     """按输入长度分桶（0-4k / 4-8k / 8k+）汇总已算好的 score 与 sim。
     score/sim 由 scorer 预先计算（同口径），这里只做分桶 + 桶内平均，不重复算分。
     返回 {"0-4k": {"score":, "sim":}, "4-8k": {...}, "8k+": {...}}。
-    sim=None 的样本不参与桶内 sim 平均（非 4 数据集或模型不可用）。
+
+    空桶（该数据集该长度区间无样本，如 musique/dureader 落不进 0-4k）返回
+    score=None / sim=None，表示"无样本"——下游组均值会跳过 None，不把 0 当真分数计入。
+    sim=None 的样本不参与桶内 sim 平均（非 summary 数据集或模型不可用）。
     """
     bucket_scores = {"0-4k": [], "4-8k": [], "8k+": []}
     bucket_sims = {"0-4k": [], "4-8k": [], "8k+": []}
@@ -383,10 +386,10 @@ def scorer_e(dataset, scores, sims, lengths):
         bucket_scores[key].append(score)
         if sim is not None:
             bucket_sims[key].append(sim)
-    # 桶内平均
+    # 桶内平均；空桶返回 None 表示无样本，下游组均值跳过 None
     result = {}
     for key in bucket_scores:
-        avg_score = round(100 * np.mean(bucket_scores[key]), 2) if bucket_scores[key] else 0.0
+        avg_score = round(100 * np.mean(bucket_scores[key]), 2) if bucket_scores[key] else None
         avg_sim = round(100 * (sum(bucket_sims[key]) / len(bucket_sims[key])), 2) if bucket_sims[key] else None
         result[key] = {"score": avg_score, "sim": avg_sim}
     return result
