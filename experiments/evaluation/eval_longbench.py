@@ -481,19 +481,27 @@ def eval(json_path, dataset_dir=None, tokenizer=None):
     # 遍历每个样本
     for key, data in results.items():
         task = data["task"]
-        prediction = data["pred"]
-        ground_truths = data["answers"]
-        all_classes = data.get("all_classes", None)
+        # 只有 summary 类（dataset2extra_metric 配置的数据集）需要 sim 指标，其他一律 None
+        need_sim = task in dataset2extra_metric
 
-        # 计算样本 score（含额外指标 sim）
-        result = scorer(task, prediction, ground_truths, all_classes)
-        score = result["score"]
-        sim = result["sim"]
-
-        # 写回 JSON
-        results[key]["score"] = score
-        if sim is not None:
-            results[key]["sim"] = sim
+        # 若已有 score（已评分过，含增量复跑时 predict filter 跳过的旧样本），
+        # 直接复用，不重复调用 scorer——避免重算开销，也避免 sim 因模型不可用被改写。
+        if "score" in data:
+            score = data["score"]
+            sim = data.get("sim") if need_sim else None
+        else:
+            # 计算样本 score（含额外指标 sim）并写回 JSON
+            result = scorer(
+                task,
+                data["pred"],
+                data["answers"],
+                data.get("all_classes", None),
+            )
+            score = result["score"]
+            sim = result["sim"] if need_sim else None
+            results[key]["score"] = score
+            if need_sim and sim is not None:
+                results[key]["sim"] = sim
 
         # 补全缺失的 context_tok_len（强制：必须能从 jsonl 取到 context，不降级用字符数）
         if "context_tok_len" not in data:
@@ -545,6 +553,12 @@ def eval(json_path, dataset_dir=None, tokenizer=None):
 
     # 总体平均分
     scores["avg"] = round((sum(score_list) / len(score_list)), 2)
+
+    # 清理：非 summary 类（不在 dataset2extra_metric）不应保留 sim 字段，
+    # 删除历史残留，保持输出 JSON 口径一致。
+    for key, data in results.items():
+        if data.get("task") not in dataset2extra_metric and "sim" in data:
+            del data["sim"]
 
     # out_path = None
     # # 保存更新后的 JSON
