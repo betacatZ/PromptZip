@@ -428,10 +428,46 @@ def scorer(dataset, prediction, ground_truths, all_classes):
     return {"score": score, "sim": sim}
 
 
-def eval(json_path):
+def eval(json_path, dataset_dir=None, tokenizer=None):
+    """对结果 JSON 评分并按长度分桶统计。
+
+    若样本缺少 context_tok_len 字段（旧结果），必须同时提供 dataset_dir + tokenizer，
+    从 LongBench jsonl 重新读 context 补算 token 数写回 JSON。
+    不允许用 length(字符数) 降级——否则同一 task 的 token_length_bucket 会混入
+    字符数口径导致统计失真；故二者缺一、或有样本无法补算时直接报错。
+
+    注意：predict 的 filter 会跳过 results 中已存在的样本（含已写入 score 的旧样本），
+    故旧样本的 context_tok_len 只能由本函数补全，predict 不会重写。
+    """
     # 读取 JSON
     with open(json_path, "r", encoding="utf-8") as f:
         results = json.load(f)
+
+    # 检查是否需要补全 context_tok_len
+    _need_backfill = any("context_tok_len" not in d for d in results.values())
+    if _need_backfill:
+        # 强制要求二者齐全，否则 token_length_bucket 会混入字符数口径导致统计失真
+        if tokenizer is None or not dataset_dir:
+            raise RuntimeError(
+                "结果 JSON 中存在缺 context_tok_len 字段的样本，但未同时提供 "
+                "dataset_dir 和 tokenizer，无法补算 token 数。请检查配置 "
+                "(--config 须含 dataset_dir、llm_config.llm.model_name)。"
+                "不允许用字符数降级，否则同一 task 的 token_length_bucket 统计口径不一致。"
+            )
+    _task_context_cache = {}  # task -> {idx_key: context}，懒加载
+
+    def _get_context(task, idx_key):
+        """从数据集 jsonl 加载某 task 的 {idx: context} 映射（懒加载，缓存）。"""
+        if task not in _task_context_cache:
+            mapping = {}
+            jsonl_path = os.path.join(dataset_dir, f"{task}.jsonl")
+            if os.path.exists(jsonl_path):
+                ds = load_dataset("json", data_files={"test": jsonl_path}, split="test")
+                for sample in ds:
+                    key = f"{sample['dataset']}_{sample['_id']}"
+                    mapping[key] = sample["context"]
+            _task_context_cache[task] = mapping
+        return _task_context_cache.get(task, {}).get(idx_key)
 
     # 按 task 分类收集每个 task 的 scores 与 extra 指标
     task_scores = defaultdict(list)
@@ -458,6 +494,18 @@ def eval(json_path):
         results[key]["score"] = score
         if sim is not None:
             results[key]["sim"] = sim
+
+        # 补全缺失的 context_tok_len（强制：必须能从 jsonl 取到 context，不降级用字符数）
+        if "context_tok_len" not in data:
+            context = _get_context(task, key)
+            if context is None:
+                raise RuntimeError(
+                    f"样本 {key} 缺 context_tok_len，且无法从 {dataset_dir}/{task}.jsonl "
+                    f"取到对应 context 来补算 token 数。不允许用字符数降级（口径会失真）。"
+                    f"请确认 dataset_dir 正确且 jsonl 含该样本。"
+                )
+            data["context_tok_len"] = len(tokenizer.encode(context, add_special_tokens=False))
+            results[key]["context_tok_len"] = data["context_tok_len"]
 
         # 保存 task 层面的 score / sim
         task_scores[task].append(score)
@@ -955,13 +1003,45 @@ def write_score(run_save_dir, score_dict):
 
     # 分组定义
     groups = [
-        ["narrativeqa", "qasper", "multifieldqa_en", "multifieldqa_zh"],  # 第0到3组（4个）
-        ["hotpotqa", "2wikimqa", "musique", "dureader"],  # 第4到8组（4个）
-        ["gov_report", "qmsum", "multi_news", "vcsum"],  # 第9到13组（4个）
+        ["narrativeqa", "qasper", "multifieldqa_en", "multifieldqa_zh"],  # single-doc qa
+        ["hotpotqa", "2wikimqa", "musique", "dureader"],  # multi-doc qa
+        ["gov_report", "qmsum", "multi_news", "vcsum"],  # summary
         ["triviaqa", "samsum", "trec", "lsht"],  # 第14到18组（4个）
         ["passage_retrieval_en", "passage_count", "passage_retrieval_zh"],  # 第19到21组（3个）
         ["lcc", "repobench-p"],  # 第22到24组（2个）
     ]
+    group_names = [
+        "single-doc qa", "multi-doc qa", "summary",
+        "few-shot", "synthetic", "code",
+    ]
+
+    def bucket_cell(b, key, sub):
+        """从桶字典 b 取 (key 桶的 sub 字段)，None/缺省返回 None。"""
+        v = b.get(key, {}).get(sub) if isinstance(b.get(key), dict) else None
+        return v
+
+    def _fmt(v):
+        """None→空串，其他原样返回（保留 0.0，不被 or 吞掉）。"""
+        return "" if v is None else v
+
+    def group_bucket_avg(group, bucket_key):
+        """计算一组数据集在 length_bucket/token_length_bucket 下的桶均值。
+        返回 6 列 [0-4k_score, 0-4k_sim, 4-8k_score, 4-8k_sim, 8k+_score, 8k+_sim]，
+        None 项跳过，全空则该列为空。
+        """
+        cols = [("0-4k", "score"), ("0-4k", "sim"), ("4-8k", "score"),
+                ("4-8k", "sim"), ("8k+", "score"), ("8k+", "sim")]
+        out = []
+        for bkey, sub in cols:
+            vals = []
+            for ds in group:
+                if ds not in score_dict or not isinstance(score_dict[ds], dict):
+                    continue
+                v = bucket_cell(score_dict[ds].get(bucket_key, {}), bkey, sub)
+                if v is not None:
+                    vals.append(v)
+            out.append(round(sum(vals) / len(vals), 2) if vals else "")
+        return out
 
     # 计算每个组的平均值
     group_averages = []
@@ -1005,49 +1085,53 @@ def write_score(run_save_dir, score_dict):
 
     print(f"结果写入: {output_path}")
 
-    # 写入 length_score.csv（按长度分桶 0-4k/4-8k/8k+ 的 score 与 sim）
+    # 写入 length_score.csv（按长度分桶 0-4k/4-8k/8k+ 的 score 与 sim，含组均值）
     bucket_path = os.path.join(run_save_dir, "length_score.csv")
     with open(bucket_path, "w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
         writer.writerow(["dataset", "0-4k", "0-4k_sim", "4-8k", "4-8k_sim", "8k+", "8k+_sim"])
-        for dataset in score_dict:
-            if not isinstance(score_dict[dataset], dict):
-                continue
-            b = score_dict[dataset].get("length_bucket", {})
-
-            def cell(key, sub):
-                v = b.get(key, {}).get(sub) if isinstance(b.get(key), dict) else None
-                return "" if v is None else v
-
-            writer.writerow([
-                dataset,
-                cell("0-4k", "score"), cell("0-4k", "sim"),
-                cell("4-8k", "score"), cell("4-8k", "sim"),
-                cell("8k+", "score"), cell("8k+", "sim"),
-            ])
+        for gi, group in enumerate(groups):
+            for ds in group:
+                if ds not in score_dict or not isinstance(score_dict[ds], dict):
+                    continue
+                b = score_dict[ds].get("length_bucket", {})
+                writer.writerow([
+                    ds,
+                    _fmt(bucket_cell(b, "0-4k", "score")),
+                    _fmt(bucket_cell(b, "0-4k", "sim")),
+                    _fmt(bucket_cell(b, "4-8k", "score")),
+                    _fmt(bucket_cell(b, "4-8k", "sim")),
+                    _fmt(bucket_cell(b, "8k+", "score")),
+                    _fmt(bucket_cell(b, "8k+", "sim")),
+                ])
+            # 组均值行
+            gname = group_names[gi] if gi < len(group_names) else f"Group{gi}"
+            writer.writerow([f"Avg ({gname})"] + group_bucket_avg(group, "length_bucket"))
 
     print(f"结果写入: {bucket_path}")
 
-    # 写入 token_length_score.csv（按原文 token 数 0-4k/4-8k/8k+ 分桶的 score 与 sim）
+    # 写入 token_length_score.csv（按原文 token 数 0-4k/4-8k/8k+ 分桶的 score 与 sim，含组均值）
     tok_bucket_path = os.path.join(run_save_dir, "token_length_score.csv")
     with open(tok_bucket_path, "w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
         writer.writerow(["dataset", "0-4k", "0-4k_sim", "4-8k", "4-8k_sim", "8k+", "8k+_sim"])
-        for dataset in score_dict:
-            if not isinstance(score_dict[dataset], dict):
-                continue
-            b = score_dict[dataset].get("token_length_bucket", {})
-
-            def cell_t(key, sub):
-                v = b.get(key, {}).get(sub) if isinstance(b.get(key), dict) else None
-                return "" if v is None else v
-
-            writer.writerow([
-                dataset,
-                cell_t("0-4k", "score"), cell_t("0-4k", "sim"),
-                cell_t("4-8k", "score"), cell_t("4-8k", "sim"),
-                cell_t("8k+", "score"), cell_t("8k+", "sim"),
-            ])
+        for gi, group in enumerate(groups):
+            for ds in group:
+                if ds not in score_dict or not isinstance(score_dict[ds], dict):
+                    continue
+                b = score_dict[ds].get("token_length_bucket", {})
+                writer.writerow([
+                    ds,
+                    _fmt(bucket_cell(b, "0-4k", "score")),
+                    _fmt(bucket_cell(b, "0-4k", "sim")),
+                    _fmt(bucket_cell(b, "4-8k", "score")),
+                    _fmt(bucket_cell(b, "4-8k", "sim")),
+                    _fmt(bucket_cell(b, "8k+", "score")),
+                    _fmt(bucket_cell(b, "8k+", "sim")),
+                ])
+            # 组均值行
+            gname = group_names[gi] if gi < len(group_names) else f"Group{gi}"
+            writer.writerow([f"Avg ({gname})"] + group_bucket_avg(group, "token_length_bucket"))
 
     print(f"结果写入: {tok_bucket_path}")
 
@@ -1063,6 +1147,16 @@ if __name__ == "__main__":
         base_config = yaml.safe_load(f)
 
     base_exp_name = base_config["exp_config"]["name"]
+
+    # eval() 补全旧结果缺失的 context_tok_len 需要同时提供 tokenizer + dataset_dir；
+    # 若旧结果缺该字段而此处取不到，eval() 会直接报错（不再降级用字符数，避免口径失真）。
+    dataset_dir = base_config.get("dataset_dir")
+    eval_tokenizer = None
+    try:
+        llm_model_name = base_config["llm_config"]["llm"]["model_name"]
+        eval_tokenizer = AutoTokenizer.from_pretrained(llm_model_name, trust_remote_code=True)
+    except Exception as e:
+        print(f"[main] 未加载 eval 用 tokenizer：{e}（若结果 JSON 有样本缺 context_tok_len，eval() 将报错）")
 
     reranker_conf = base_config.get("reranker_config", {}) or {}
     compressor_conf = base_config.get("compressor_config", {}) or {}
@@ -1102,7 +1196,7 @@ if __name__ == "__main__":
 
         asyncio.run(predict(run_config, result_json, enable_test=args.debug))
 
-        score_dict = eval(result_json)
+        score_dict = eval(result_json, dataset_dir=dataset_dir, tokenizer=eval_tokenizer)
         write_score(run_save_dir, score_dict)
 
         sys.exit(0)  #  阻止继续进入后面的多重循环
@@ -1167,7 +1261,7 @@ if __name__ == "__main__":
 
             asyncio.run(predict(run_config, result_json, enable_test=args.debug))
 
-            score_dict = eval(result_json)
+            score_dict = eval(result_json, dataset_dir=dataset_dir, tokenizer=eval_tokenizer)
             write_score(run_save_dir, score_dict)
 
             if has_reranker and run_config["reranker_config"].get("selection_mode") in [
