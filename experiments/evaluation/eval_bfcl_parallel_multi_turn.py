@@ -301,24 +301,43 @@ def score(run_save_dir: str, json_path: str):
     with open(os.path.join(run_save_dir, "score.json"), "w", encoding="utf-8") as f:
         json.dump(score_dict, f, ensure_ascii=False, indent=2)
 
-    # CSV: overall + per-category
-    with open(os.path.join(run_save_dir, "score.csv"), "w", newline="", encoding="utf-8") as f:
+    # CSV: 每行一个 (mode, rate, category) 切片，列结构清晰，Excel 可直接打开
+    # UTF-8 with BOM：让 Excel/Numbers 正确识别中文 category 名（如 long_context）
+    csv_path = os.path.join(run_save_dir, "score.csv")
+    with open(csv_path, "w", newline="", encoding="utf-8-sig") as f:
         writer = csv.writer(f)
-        writer.writerow(["group", "overall_acc", "num", "n_tools_avg", "tool_recall_avg"])
+        writer.writerow([
+            "mode", "rate", "category", "overall_acc", "num",
+            "n_tools_avg", "tool_recall_avg", "top_error_type",
+        ])
         for key, sd in score_dict.items():
             items = by_group[(sd["mode"], sd["rate"])]
             n_avg = sum(r["n_tools_kept"] for r in items) / len(items) if items else 0
             recall_avg = sum(r["tool_recall"] for r in items) / len(items) if items else 0
+            # 主行：overall
+            top_err = max(sd["error_type_distribution"].items(), key=lambda x: x[1])[0] if sd["error_type_distribution"] else "-"
             writer.writerow([
-                key,
+                sd["mode"],
+                sd["rate"] if sd["rate"] is not None else "-",
+                "OVERALL",
                 f"{sd['overall_accuracy']:.4f}",
                 sd["num_samples"],
                 f"{n_avg:.2f}",
                 f"{recall_avg:.4f}",
+                top_err,
             ])
-            # per-category 明细
+            # 子行：per official_category
             for cat, cd in sd["by_category"].items():
-                writer.writerow([f"  {key}/{cat}", f"{cd['accuracy']:.4f}", cd["num"], "", ""])
+                writer.writerow([
+                    sd["mode"],
+                    sd["rate"] if sd["rate"] is not None else "-",
+                    cat,
+                    f"{cd['accuracy']:.4f}",
+                    cd["num"],
+                    "",  # n_tools 仅 overall 有意义
+                    "",  # tool_recall 仅 overall 有意义
+                    "",
+                ])
 
     print(f"[score] 写入 {run_save_dir}/score.json 与 score.csv")
     # 打印摘要
