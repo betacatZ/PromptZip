@@ -1,0 +1,41 @@
+# BFCL V4 Parallel Multi-Turn 评测配置
+# 测试 reranker 压缩 function 文档（每个工具文档为 1 个 chunk，纯 top-k 保留）对函数调用精度的影响
+# 数据集：OpenMLRL/BFCL-V4-Parallel-Multi-Turn（eval 集 204 行）
+
+# 可选：本地 eval.jsonl 目录（避免每次从 HF 拉取）；留空则从 HF 在线加载
+dataset_dir:
+
+desc: "BFCL V4 Parallel Multi-Turn - reranker compress function docs"
+
+exp_config:
+  name: bfcl_parallel_multi_turn
+  batch_size: 8
+  max_total_token: 32768
+  # 运行模式：baseline（不压缩）+ compress_func（reranker 压工具文档）
+  modes:
+    - baseline
+    - compress_func
+
+reranker_config:
+  model_type: rerank
+  model_name: Qwen/Qwen3-Reranker-0.6B
+  max_position_embeddings: 32768
+  # rate 对 compress_func 模式生效（baseline 忽略）：
+  #   >=1 为保留的绝对工具数（如 10 表示保留 10 个工具）
+  #   <1  为保留比例
+  rate: [10, 8, 6]
+  device_id: 0
+  engine: vllm
+  # compress_func 用 compress_chunks（内部纯 top-k，无需 selection_mode）
+  # instruction 默认见脚本 DEFAULT_INSTRUCTION；可在此覆盖
+  # instruction: "Given a user request, retrieve the most relevant tool functions."
+
+llm_config:
+  device_ids: 1
+  llm:
+    model_name: Qwen/Qwen2.5-7B-Instruct
+    tp: 1
+  sampling:
+    temperature: 0.0
+    max_tokens: 512
+    top_p: 1.0
