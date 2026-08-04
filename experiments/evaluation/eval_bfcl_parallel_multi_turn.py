@@ -123,14 +123,18 @@ def _build_prompt(tokenizer, func_list: list, user_prompt: str, max_total_token:
     used_tools_param = True
     try:
         prompt = tokenizer.apply_chat_template(
-            messages, tools=tools, tokenize=False, add_generation_prompt=True
+            messages, tools=tools, tokenize=False, add_generation_prompt=True,
+            enable_thinking=False,
         )
     except (TypeError, ValueError):
         # 该 tokenizer 不支持 tools= 参数，fallback 到纯文本
         used_tools_param = False
         tools_text = _build_tools_for_prompt(func_list)
         messages[0]["content"] = SYSTEM_PROMPT_TEMPLATE.format(tools=tools_text)
-        prompt = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+        prompt = tokenizer.apply_chat_template(
+            messages, tokenize=False, add_generation_prompt=True,
+            enable_thinking=False,
+        )
 
     # 超长截断（保留首尾）
     token_ids = tokenizer.encode(prompt)
