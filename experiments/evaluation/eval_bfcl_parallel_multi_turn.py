@@ -41,6 +41,8 @@ BFCL_DATASET = "OpenMLRL/BFCL-V4-Parallel-Multi-Turn"
 DEFAULT_INSTRUCTION = "Given a user request, retrieve the most relevant tool functions that should be called to fulfill the request."
 
 # 期望模型输出的工具调用 JSON 数组格式说明
+# 注：当 tokenizer 支持 tools= 时，工具文档由 chat template 自动渲染（Hermes 风格），
+# 此 SYSTEM_PROMPT 仅在不支持 tools= 的 fallback 场景使用。
 SYSTEM_PROMPT_TEMPLATE = (
     "You are a function calling assistant. Based on the user request and the available tools below, "
     "output the tool calls needed for the CURRENT user turn.\n\n"
@@ -49,6 +51,82 @@ SYSTEM_PROMPT_TEMPLATE = (
     "Do not output any text outside the JSON array. If no tool call is needed for this turn, return [].\n\n"
     "Available tools:\n{tools}"
 )
+
+# 当用 tools= 渲染时的 system 提示（数据集 user_prompt 已含「Return only the tool calls...」指令，
+# 这里只补充输出格式约定，避免与数据集指令冲突）
+SYSTEM_WITH_TOOLS = (
+    "You are a function calling assistant. For the CURRENT user turn, decide which tools to call. "
+    'Output the tool calls as a JSON array: [{"name": "<func>", "arguments": {<param>: <value>}}]. '
+    "If no tool call is needed, return []. Return only the JSON array."
+)
+
+
+def _bfcl_to_openai_tools(func_list: list) -> list:
+    """把 BFCL 工具格式转成 OpenAI/JSON Schema 标准工具格式，供 chat template 的 tools= 使用。
+
+    BFCL: {"name","description","parameters":{"type":"dict","properties":{...},"required":[...]},"response":{...}}
+    OpenAI: {"type":"function","function":{"name","description","parameters":{"type":"object","properties":{...},"required":[...]}}}
+    主要差异：dict->object，外层包一层 function，去掉 response。
+    """
+    out = []
+    for f in func_list:
+        params = copy.deepcopy(f.get("parameters") or {})  # 深拷贝，避免污染原数据集对象
+        # 递归把 type: dict -> object（嵌套 properties 里也可能有）
+        def _fix(node):
+            if isinstance(node, dict):
+                if node.get("type") == "dict":
+                    node["type"] = "object"
+                for v in node.values():
+                    _fix(v)
+            elif isinstance(node, list):
+                for v in node:
+                    _fix(v)
+            return node
+
+        params = _fix(params)
+        # 兜底：OpenAI 规范要求 parameters 顶层 type=object
+        if "type" not in params:
+            params["type"] = "object"
+        out.append(
+            {
+                "type": "function",
+                "function": {
+                    "name": f["name"],
+                    "description": f.get("description", ""),
+                    "parameters": params,
+                },
+            }
+        )
+    return out
+
+
+def _build_prompt(tokenizer, func_list: list, user_prompt: str, max_total_token: int, max_gen: int) -> str:
+    """构造推理 prompt：优先用 chat template 的 tools= 渲染工具文档。
+
+    成功走 tools= 路径（模型训练时见过的格式）→ 输出更可靠；
+    失败则 fallback 到纯文本 tools 塞 system。
+    """
+    messages = [
+        {"role": "system", "content": SYSTEM_WITH_TOOLS},
+        {"role": "user", "content": user_prompt},
+    ]
+    tools = _bfcl_to_openai_tools(func_list)
+    try:
+        prompt = tokenizer.apply_chat_template(
+            messages, tools=tools, tokenize=False, add_generation_prompt=True
+        )
+    except (TypeError, ValueError):
+        # 该 tokenizer 不支持 tools= 参数，fallback 到纯文本
+        tools_text = _build_tools_for_prompt(func_list)
+        messages[0]["content"] = SYSTEM_PROMPT_TEMPLATE.format(tools=tools_text)
+        prompt = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+
+    # 超长截断（保留首尾）
+    token_ids = tokenizer.encode(prompt)
+    if len(token_ids) > (max_total_token - max_gen):
+        half = int((max_total_token - max_gen) / 2) - 1
+        prompt = tokenizer.decode(token_ids[:half]) + tokenizer.decode(token_ids[-half:])
+    return prompt
 
 
 def load_bfcl_eval(dataset_dir: str | None = None):
@@ -182,19 +260,8 @@ async def predict(yaml_args, mode: str, rate, json_path: str, enable_test: bool 
                     kept_funcs = func_list
                     kept_names = {f["name"] for f in func_list}
 
-                tools_text = _build_tools_for_prompt(kept_funcs)
-                system = SYSTEM_PROMPT_TEMPLATE.format(tools=tools_text)
-                messages = [
-                    {"role": "system", "content": system},
-                    {"role": "user", "content": sample["user_prompt"]},
-                ]
-                prompt = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-
-                # 超长截断
-                token_ids = tokenizer.encode(prompt)
-                if len(token_ids) > (max_total_token - max_gen):
-                    half = int((max_total_token - max_gen) / 2) - 1
-                    prompt = tokenizer.decode(token_ids[:half]) + tokenizer.decode(token_ids[-half:])
+                # 用 chat template 的 tools= 渲染工具文档（模型训练时见过的格式）
+                prompt = _build_prompt(tokenizer, kept_funcs, sample["user_prompt"], max_total_token, max_gen)
 
                 batch_prompt.append(prompt)
                 meta.append(

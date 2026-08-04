@@ -372,69 +372,105 @@ def parallel_function_checker_no_order(
 
 
 def parse_model_output(text: str) -> list[dict]:
-    """从模型生成文本里解析出函数调用列表 [{name, arguments}]。
+    """从模型生成文本里解析出函数调用列表，归一化为 [{func_name: {param: val}}]。
 
-    BFCL 原生格式期望模型直接输出 JSON 数组：
-        [{"name": "cd", "arguments": {"folder": "x"}}, ...]
-    但模型可能加 markdown fence、前置文字、或用 function/parameters 别名，这里做容错。
+    支持三种模型输出形态：
+      1. Hermes/Qwen tool_call 标签（可能有多个），或特殊 token 形式
+         <|tool_call|>{...}<|/tool_call|>
+      2. BFCL 原生 JSON 数组：[{"name":"cd","arguments":{...}}, ...]
+      3. 单个 JSON 对象 / markdown fence / 前置自然语言等容错。
+
     返回统一为 [{func_name: {param: val}}] 形式（与 official ast_checker 输入一致）。
     """
     if not text:
         return []
 
     s = text.strip()
+    normalized = []
 
-    # 去 markdown 代码块
+    # ---- 1) 优先解析 tool_call 标签（Hermes/Qwen 格式，可能有多个）----
+    # 用普通字符串变量拼标签，避免源码出现裸标签字面量
+    open_tag = chr(60) + "tool" + chr(62)        # <tool>
+    close_tag = chr(60) + "/tool" + chr(62)     # </tool>
+    tag_re = re.compile(re.escape(open_tag) + r"\s*(.*?)\s*" + re.escape(close_tag), re.DOTALL)
+    bodies = [m.group(1) for m in tag_re.finditer(s)]
+    if not bodies:
+        # <|tool_call|> ... <|/tool_call|> 形式
+        ot1 = "<|tool_call|>"
+        ct1 = "<|/tool_call|>"
+        tag_re2 = re.compile(re.escape(ot1) + r"\s*(.*?)\s*(?:" + re.escape(ct1) + r"|$)", re.DOTALL)
+        bodies = [m.group(1) for m in tag_re2.finditer(s)]
+    for body in bodies:
+        obj = _parse_single_json_object(body)
+        if obj is not None:
+            _append_normalized(normalized, obj)
+    if normalized:
+        return normalized
+
+    # ---- 2/3) fallback：去 markdown fence 后找 JSON 数组/对象 ----
     fence_match = re.search(r"```(?:json|python|tool|function)?\s*(.*?)```", s, re.DOTALL)
     if fence_match:
         s = fence_match.group(1).strip()
 
-    # 尝试找到第一个 JSON 数组 [ ... ]
+    # 找第一个 JSON 数组 [ ... ]
     arr_match = re.search(r"\[.*\]", s, re.DOTALL)
     candidate = arr_match.group(0) if arr_match else s
 
+    parsed = None
     try:
         parsed = json.loads(candidate)
     except json.JSONDecodeError:
-        # 容错：尝试找第一个 JSON 对象 { ... }（单函数调用）
+        # 容错：找第一个 JSON 对象 { ... }
         obj_match = re.search(r"\{.*\}", s, re.DOTALL)
-        if not obj_match:
-            return []
-        try:
-            obj = json.loads(obj_match.group(0))
-            parsed = [obj]
-        except json.JSONDecodeError:
-            return []
+        if obj_match:
+            parsed = _parse_single_json_object(obj_match.group(0))
 
     if isinstance(parsed, dict):
         parsed = [parsed]
     if not isinstance(parsed, list):
         return []
 
-    # 归一化：每个调用统一成 {func_name: {param: val}} 形式
-    normalized = []
     for item in parsed:
-        if not isinstance(item, dict):
-            continue
-        # 兼容 name/function + arguments/parameters
-        func_name = item.get("name") or item.get("function")
-        args = item.get("arguments")
-        if args is None:
-            args = item.get("parameters")
-        if args is None:
-            args = {}
-        if func_name is None:
-            # 也许整个 item 就是 {func_name: {param: val}} 形式
-            if len(item) == 1:
-                func_name = list(item.keys())[0]
-                args = item[func_name]
-            else:
-                continue
-        if not isinstance(args, dict):
-            args = {}
-        normalized.append({func_name: args})
+        _append_normalized(normalized, item)
 
     return normalized
+
+
+def _parse_single_json_object(text: str) -> dict | None:
+    """容错解析单个 JSON 对象，处理尾随逗号等小问题。"""
+    try:
+        obj = json.loads(text)
+        return obj if isinstance(obj, dict) else None
+    except json.JSONDecodeError:
+        cleaned = text.strip().rstrip(",").strip()
+        try:
+            obj = json.loads(cleaned)
+            return obj if isinstance(obj, dict) else None
+        except json.JSONDecodeError:
+            return None
+
+
+def _append_normalized(normalized: list, item: dict) -> None:
+    """把一个工具调用对象归一化成 {func_name: {param: val}} 并追加到 normalized。"""
+    if not isinstance(item, dict):
+        return
+    # 兼容 name/function + arguments/parameters
+    func_name = item.get("name") or item.get("function")
+    args = item.get("arguments")
+    if args is None:
+        args = item.get("parameters")
+    if args is None:
+        args = {}
+    if func_name is None:
+        # 也许整个 item 就是 {func_name: {param: val}} 形式
+        if len(item) == 1:
+            func_name = list(item.keys())[0]
+            args = item[func_name]
+        else:
+            return
+    if not isinstance(args, dict):
+        args = {}
+    normalized.append({func_name: args})
 
 
 # -------------------- 行级判分入口 --------------------
