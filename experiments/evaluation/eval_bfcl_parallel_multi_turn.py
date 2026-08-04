@@ -321,10 +321,17 @@ async def predict(yaml_args, mode: str, rate, json_path: str, enable_test: bool 
             preds = await asyncio.to_thread(run_llm)
 
             for idx, m in enumerate(meta):
+                pred_text = preds[idx].outputs[0].text
+                # 逐条判分，把得分写进 result，方便直接看每条对错
+                res = bfcl_metrics.evaluate_row(m["function"], pred_text, m["ground_truth"])
                 results[m["id"]] = {
                     "mode": mode,
                     "rate": rate,
-                    "pred": preds[idx].outputs[0].text,
+                    "pred": pred_text,
+                    "valid": res["valid"],
+                    "error_type": res["error_type"],
+                    "error": res["error"],
+                    "parsed_calls": res["model_output"],
                     **m,
                 }
 
@@ -343,11 +350,16 @@ def score(run_save_dir: str, json_path: str):
 
     judged = []
     for rid, data in results.items():
-        res = bfcl_metrics.evaluate_row(
-            data["function"],
-            data["pred"],
-            data["ground_truth"],
-        )
+        # 复用 result.json 里已写入的判分（consumer 已判过）；旧 result 缺字段则重算
+        if "valid" in data and "error_type" in data:
+            valid = data["valid"]
+            error_type = data["error_type"]
+            pred_parsed = data.get("parsed_calls", [])
+        else:
+            res = bfcl_metrics.evaluate_row(data["function"], data["pred"], data["ground_truth"])
+            valid = res["valid"]
+            error_type = res["error_type"]
+            pred_parsed = res["model_output"]
         judged.append(
             {
                 "id": rid,
@@ -355,12 +367,12 @@ def score(run_save_dir: str, json_path: str):
                 "rate": data["rate"],
                 "official_category": data["official_category"],
                 "task_type": data["task_type"],
-                "valid": res["valid"],
-                "error_type": res["error_type"],
+                "valid": valid,
+                "error_type": error_type,
                 "n_tools_total": data["n_tools_total"],
                 "n_tools_kept": data["n_tools_kept"],
                 "tool_recall": data["tool_recall"],
-                "pred_parsed": res["model_output"],
+                "pred_parsed": pred_parsed,
             }
         )
 
