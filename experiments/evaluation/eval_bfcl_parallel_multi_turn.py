@@ -105,18 +105,21 @@ def _build_prompt(tokenizer, func_list: list, user_prompt: str, max_total_token:
 
     成功走 tools= 路径（模型训练时见过的格式）→ 输出更可靠；
     失败则 fallback 到纯文本 tools 塞 system。
+    返回 (prompt, used_tools_param)：used_tools_param 标记是否走了 tools= 路径。
     """
     messages = [
         {"role": "system", "content": SYSTEM_WITH_TOOLS},
         {"role": "user", "content": user_prompt},
     ]
     tools = _bfcl_to_openai_tools(func_list)
+    used_tools_param = True
     try:
         prompt = tokenizer.apply_chat_template(
             messages, tools=tools, tokenize=False, add_generation_prompt=True
         )
     except (TypeError, ValueError):
         # 该 tokenizer 不支持 tools= 参数，fallback 到纯文本
+        used_tools_param = False
         tools_text = _build_tools_for_prompt(func_list)
         messages[0]["content"] = SYSTEM_PROMPT_TEMPLATE.format(tools=tools_text)
         prompt = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
@@ -126,6 +129,7 @@ def _build_prompt(tokenizer, func_list: list, user_prompt: str, max_total_token:
     if len(token_ids) > (max_total_token - max_gen):
         half = int((max_total_token - max_gen) / 2) - 1
         prompt = tokenizer.decode(token_ids[:half]) + tokenizer.decode(token_ids[-half:])
+    return prompt, used_tools_param
     return prompt
 
 
@@ -261,7 +265,20 @@ async def predict(yaml_args, mode: str, rate, json_path: str, enable_test: bool 
                     kept_names = {f["name"] for f in func_list}
 
                 # 用 chat template 的 tools= 渲染工具文档（模型训练时见过的格式）
-                prompt = _build_prompt(tokenizer, kept_funcs, sample["user_prompt"], max_total_token, max_gen)
+                prompt, used_tools_param = _build_prompt(
+                    tokenizer, kept_funcs, sample["user_prompt"], max_total_token, max_gen
+                )
+
+                # 第一条样本打印诊断：看 tools= 是否生效 + prompt 前缀
+                if not getattr(predict, "_diag_done", False):
+                    print("=" * 60)
+                    print(f"[诊断] mode={mode} sample_id={sample['id']}")
+                    print(f"[诊断] tools= 生效: {used_tools_param}")
+                    print(f"[诊断] prompt 前 600 字符:")
+                    print(prompt[:600])
+                    print(f"[诊断] prompt 总 token 数: {len(tokenizer.encode(prompt))}")
+                    print("=" * 60)
+                    predict._diag_done = True
 
                 batch_prompt.append(prompt)
                 meta.append(

@@ -407,33 +407,81 @@ def parse_model_output(text: str) -> list[dict]:
     if normalized:
         return normalized
 
-    # ---- 2/3) fallback：去 markdown fence 后找 JSON 数组/对象 ----
+    # ---- 2) 去 markdown fence ----
     fence_match = re.search(r"```(?:json|python|tool|function)?\s*(.*?)```", s, re.DOTALL)
     if fence_match:
         s = fence_match.group(1).strip()
 
-    # 找第一个 JSON 数组 [ ... ]
+    # ---- 3) 先尝试整体解析为 JSON 数组（模型输出干净时直接成功）----
     arr_match = re.search(r"\[.*\]", s, re.DOTALL)
-    candidate = arr_match.group(0) if arr_match else s
+    if arr_match:
+        try:
+            parsed = json.loads(arr_match.group(0))
+            if isinstance(parsed, list):
+                for item in parsed:
+                    _append_normalized(normalized, item)
+                if normalized:
+                    return normalized
+        except json.JSONDecodeError:
+            pass  # 数组被噪声破坏，走逐对象提取
 
-    parsed = None
-    try:
-        parsed = json.loads(candidate)
-    except json.JSONDecodeError:
-        # 容错：找第一个 JSON 对象 { ... }
-        obj_match = re.search(r"\{.*\}", s, re.DOTALL)
-        if obj_match:
-            parsed = _parse_single_json_object(obj_match.group(0))
+    # ---- 4) 逐个提取顶层 {...} 对象（括号配平），跳过噪声文本 ----
+    # 适配样本2：[\nnoise\n{obj1}\nnoise\n{obj2}\n] 这种对象本身完整但数组被噪声破坏的情况
+    for obj_str in _iter_top_level_json_objects(s):
+        obj = _parse_single_json_object(obj_str)
+        if obj is not None:
+            _append_normalized(normalized, obj)
+    if normalized:
+        return normalized
 
-    if isinstance(parsed, dict):
-        parsed = [parsed]
-    if not isinstance(parsed, list):
-        return []
-
-    for item in parsed:
-        _append_normalized(normalized, item)
+    # ---- 5) 最后兜底：单个 {.*} 贪心匹配 ----
+    obj_match = re.search(r"\{.*\}", s, re.DOTALL)
+    if obj_match:
+        obj = _parse_single_json_object(obj_match.group(0))
+        if obj is not None:
+            _append_normalized(normalized, obj)
 
     return normalized
+
+
+def _iter_top_level_json_objects(s: str):
+    """用括号配平从字符串里逐个提取顶层 {...} JSON 对象，跳过非 JSON 噪声。
+
+    正确处理嵌套大括号、字符串内的括号、转义。遇到 { 开始计数，配平到 0 即一个完整对象。
+    """
+    objects = []
+    i = 0
+    n = len(s)
+    while i < n:
+        if s[i] == "{":
+            depth = 0
+            in_str = False
+            esc = False
+            start_i = i
+            while i < n:
+                c = s[i]
+                if in_str:
+                    if esc:
+                        esc = False
+                    elif c == "\\":
+                        esc = True
+                    elif c == '"':
+                        in_str = False
+                else:
+                    if c == '"':
+                        in_str = True
+                    elif c == "{":
+                        depth += 1
+                    elif c == "}":
+                        depth -= 1
+                        if depth == 0:
+                            objects.append(s[start_i : i + 1])
+                            i += 1
+                            break
+                i += 1
+        else:
+            i += 1
+    return objects
 
 
 def _parse_single_json_object(text: str) -> dict | None:
