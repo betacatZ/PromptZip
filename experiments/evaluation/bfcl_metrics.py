@@ -388,16 +388,17 @@ def parse_model_output(text: str) -> list[dict]:
     s = text.strip()
     normalized = []
 
-    # ---- 1) 优先解析 tool_call 标签（Hermes/Qwen 格式，可能有多个）----
-    # 用普通字符串变量拼标签，避免源码出现裸标签字面量
-    open_tag = chr(60) + "tool" + chr(62)        # <tool>
-    close_tag = chr(60) + "/tool" + chr(62)     # </tool>
+    # ---- 1) 优先解析 tool_call 标签（Qwen2.5 Hermes 模板格式，可能有多个）----
+    # 标签名含下划线，用 chr 拼接构造，避免源码出现裸标签字面量
+    _tc = "tool" + chr(95) + "call"  # tool_call
+    open_tag = chr(60) + _tc + chr(62)
+    close_tag = chr(60) + chr(47) + _tc + chr(62)
     tag_re = re.compile(re.escape(open_tag) + r"\s*(.*?)\s*" + re.escape(close_tag), re.DOTALL)
     bodies = [m.group(1) for m in tag_re.finditer(s)]
     if not bodies:
-        # <|tool_call|> ... <|/tool_call|> 形式
-        ot1 = "<|tool_call|>"
-        ct1 = "<|/tool_call|>"
+        # 特殊 token 形式
+        ot1 = "<|" + _tc + "|>"
+        ct1 = "<|/" + _tc + "|>"
         tag_re2 = re.compile(re.escape(ot1) + r"\s*(.*?)\s*(?:" + re.escape(ct1) + r"|$)", re.DOTALL)
         bodies = [m.group(1) for m in tag_re2.finditer(s)]
     for body in bodies:

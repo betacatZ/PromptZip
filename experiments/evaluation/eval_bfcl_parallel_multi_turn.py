@@ -55,9 +55,8 @@ SYSTEM_PROMPT_TEMPLATE = (
 # 当用 tools= 渲染时的 system 提示（数据集 user_prompt 已含「Return only the tool calls...」指令，
 # 这里只补充输出格式约定，避免与数据集指令冲突）
 SYSTEM_WITH_TOOLS = (
-    "You are a function calling assistant. For the CURRENT user turn, decide which tools to call. "
-    'Output the tool calls as a JSON array: [{"name": "<func>", "arguments": {<param>: <value>}}]. '
-    "If no tool call is needed, return []. Return only the JSON array."
+    "You are Qwen, created by Alibaba Cloud. You are a helpful assistant. "
+    "Complete the CURRENT user turn using the available tools."
 )
 
 
@@ -130,7 +129,6 @@ def _build_prompt(tokenizer, func_list: list, user_prompt: str, max_total_token:
         half = int((max_total_token - max_gen) / 2) - 1
         prompt = tokenizer.decode(token_ids[:half]) + tokenizer.decode(token_ids[-half:])
     return prompt, used_tools_param
-    return prompt
 
 
 def load_bfcl_eval(dataset_dir: str | None = None):
