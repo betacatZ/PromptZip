@@ -52,11 +52,20 @@ SYSTEM_PROMPT_TEMPLATE = (
     "Available tools:\n{tools}"
 )
 
-# 当用 tools= 渲染时的 system 提示（数据集 user_prompt 已含「Return only the tool calls...」指令，
-# 这里只补充输出格式约定，避免与数据集指令冲突）
+# 当用 tools= 渲染时的 system 提示。
+# 对照 BFCL 官方 _DEFAULT_SYSTEM_PROMPT（constants/default_prompts.py），保留关键指令：
+#  - 缺函数/缺参数要指出（对应 miss_func/miss_param 类别）
+#  - 「Continue to output functions to call until you have fulfilled the user's request」
+#    这是防止模型少调用的关键指令（BFCL multi-turn 必备）
+# 输出格式（Hermes tool_call 标签）由 chat template 自动注入，不在此重复。
 SYSTEM_WITH_TOOLS = (
-    "You are Qwen, created by Alibaba Cloud. You are a helpful assistant. "
-    "Complete the CURRENT user turn using the available tools."
+    "You are an expert in composing functions. You are given a question and a set of possible functions. "
+    "Based on the question, you will need to make one or more function/tool calls to achieve the purpose. "
+    "If none of the functions can be used, point it out. If the given question lacks the parameters required by the function, also point it out. "
+    "You should only return the function calls in your response.\n\n"
+    "At each turn, you should try your best to complete the tasks requested by the user within the current turn. "
+    "Continue to output functions to call until you have fulfilled the user's request to the best of your ability. "
+    "Once you have no more functions to call, the system will consider the current turn complete and proceed to the next turn or task."
 )
 
 
@@ -356,6 +365,11 @@ def score(run_save_dir: str, json_path: str):
             error_type = data["error_type"]
             pred_parsed = data.get("parsed_calls", [])
         else:
+            # 旧 result 无判分字段，需重算；若也缺 function（新 result 不存），则报错提示重跑
+            if "function" not in data:
+                raise RuntimeError(
+                    f"result.json 中 {rid} 既无判分字段又无 function 字段，无法判分。请重新跑 predict 生成完整 result。"
+                )
             res = bfcl_metrics.evaluate_row(data["function"], data["pred"], data["ground_truth"])
             valid = res["valid"]
             error_type = res["error_type"]
