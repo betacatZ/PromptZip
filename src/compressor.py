@@ -1224,13 +1224,25 @@ class RerankCompressor(BaseCompressor):
             picked = [(cov_offsets[i], chunks_cov[i]) for i in cov_cut]
 
             # ---- 步骤 3：剩余 128-chunk 按顺序合并成 256-chunk ----
+            # 关键：只在"原文相邻"的 cov-chunk 之间合并（i_prev+1 == i_cur）。
+            # 若中间夹着已被覆盖性池选走的块（如 cov_cut 含 4，remaining=[...,3,5,...]），
+            # 3 与 5 不相邻，必须断开各成一块——否则拼出跨空洞的 (off3, ch3+ch5)，
+            # 选中后按 offset 排序会把夹在中间的 ch4 挤到错位，破坏原文顺序。
             cov_cut_set = set(cov_cut)
             remaining_idx = [i for i in range(n_cov) if i not in cov_cut_set]
             chunks_imp = []  # 每个元素: (起始 cov chunk 的原文偏移, 合并文本)
             cur_text = ""
             cur_tok = 0
             cur_offset = None  # 当前合并块的起始偏移 = 第一个并入的 cov chunk 的偏移
+            prev_i = None  # 上一个并入的 cov-chunk 下标，用于判断相邻性
             for i in remaining_idx:
+                # 与上一个不相邻（开头或中间隔着被选走的块）→ 先落袋再开新块
+                if prev_i is not None and i != prev_i + 1:
+                    if cur_text:
+                        chunks_imp.append((cur_offset, cur_text))
+                    cur_text = ""
+                    cur_tok = 0
+                    cur_offset = None
                 if cur_offset is None:
                     cur_offset = cov_offsets[i]
                 cur_text += chunks_cov[i]
@@ -1240,6 +1252,7 @@ class RerankCompressor(BaseCompressor):
                     cur_text = ""
                     cur_tok = 0
                     cur_offset = None
+                prev_i = i
             # 尾部残余（不足 chunk_size）作为一个块
             if cur_text:
                 chunks_imp.append((cur_offset, cur_text))
@@ -1306,6 +1319,97 @@ class RerankCompressor(BaseCompressor):
                 with open(csv_path, "w", newline="", encoding="utf-8") as f:
                     writer = csv.writer(f)
                     writer.writerow(["dataset", "chunk_rate"])
+            rows = []
+            dataset_found = False
+            with open(csv_path, "r", newline="", encoding="utf-8") as f:
+                rows = list(csv.reader(f))
+            for i, row in enumerate(rows):
+                if row and row[0] == dataset:
+                    rows[i] = [dataset, chunk_rate_str]
+                    dataset_found = True
+                    break
+            if not dataset_found:
+                rows.append([dataset, chunk_rate_str])
+            with open(csv_path, "w", newline="", encoding="utf-8") as f:
+                csv.writer(f).writerows(rows)
+
+        # hf engine 推理后恢复 CUDA_VISIBLE_DEVICES
+        if self.engine == "hf":
+            os.environ["CUDA_VISIBLE_DEVICES"] = old_cuda_vis
+
+        return scores, selected_chunks, chunks
+
+    def compress_chunks(
+        self,
+        chunks: list[str],
+        instruction: str | None,
+        query: str,
+        rate: float = 0.0,
+        dataset: str = "",
+        result_path: str = "",
+    ):
+        """对调用方已切好的 chunks（list[str]）做 reranker 打分并纯 top-k 选择。
+
+        用于「整块内容为一个评分单元」的场景（如 BFCL 工具召回：每个工具文档为 1 个 chunk），
+        不做 coverage 均匀采样、不强制保留首尾，纯按 score 降序选 top-k。
+
+        Args:
+            chunks: 已切好的 chunk 列表（如每个工具的 JSON 文档字符串）。
+            instruction: reranker 指令（None 时用默认 web search 指令）。
+            query: 相关性查询（如 BFCL 的 CURRENT user turn）。
+            rate: 保留数量；<1 为比例，>=1 为绝对 chunk 数。
+            dataset: 用于 rate.csv 记录的标识。
+            result_path: rate.csv 写入目录。
+
+        Returns:
+            (scores, selected_chunks, chunks)：与 compress 返回结构一致，便于调用方对接。
+        """
+        if query == "":
+            query = "Summarize the document"
+
+        # hf engine 推理前临时切换 CUDA_VISIBLE_DEVICES
+        if self.engine == "hf":
+            old_cuda_vis = os.environ.get("CUDA_VISIBLE_DEVICES", "")
+            os.environ["CUDA_VISIBLE_DEVICES"] = self.device_id
+
+        batch_size = 32
+        scores = []
+
+        for i in range(0, len(chunks), batch_size):
+            batch_chunks = chunks[i : i + batch_size]
+            if self.engine == "hf":
+                batch_pairs = [self.format_instruction(instruction, query, chunk) for chunk in batch_chunks]
+                batch_inputs = self.process_inputs(batch_pairs)
+                with torch.no_grad():
+                    batch_scores = self.compute_logits(batch_inputs)
+                scores.extend(batch_scores)
+            elif self.engine == "vllm":
+                if instruction is None:
+                    instruction = "Given a web search query, retrieve relevant passages that answer the query"
+                queries = [
+                    self.query_template.format(prefix=self.prefix, instruction=instruction, query=query)
+                    for _ in range(len(batch_chunks))
+                ]
+                documents = [self.document_template.format(doc=doc, suffix=self.suffix) for doc in batch_chunks]
+                outputs = self.model.score(queries, documents)
+                batch_scores = [output.outputs.score for output in outputs]
+                scores.extend(batch_scores)
+
+        # 纯 top-k：按 score 降序选，无 coverage 采样、无强制保留首尾
+        n = len(chunks)
+        k = self._resolve_keep_n(rate, n)
+        order = sorted(range(n), key=lambda i: scores[i], reverse=True)
+        selected_indices = sorted(order[:k])
+        selected_chunks = [chunks[i] for i in selected_indices]
+
+        # 记录实际 chunk_rate 并写入 CSV（与 topk 分支口径一致，按 dataset 覆盖）
+        chunk_rate = len(selected_chunks) / n if n > 0 else 0.0
+        chunk_rate_str = f"{chunk_rate:.4f}"
+        if result_path:
+            csv_path = os.path.join(result_path, "rate.csv")
+            if not os.path.exists(csv_path):
+                with open(csv_path, "w", newline="", encoding="utf-8") as f:
+                    csv.writer(f).writerow(["dataset", "chunk_rate"])
             rows = []
             dataset_found = False
             with open(csv_path, "r", newline="", encoding="utf-8") as f:
