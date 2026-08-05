@@ -78,6 +78,17 @@ def _run_mode(yaml_args, mode, rate, rows, tokenizer, ranker, llm, max_total_tok
             prompt, _ = _build_prompt(tokenizer, kept_funcs, sample["user_prompt"], max_total_token, max_gen)
             build_s = time.perf_counter() - t0
             prompt_tokens = len(tokenizer.encode(prompt, add_special_tokens=False))
+            # 拆分统计：工具文档 token（压缩前后对比）+ user_prompt token（不参与压缩，应稳定）
+            # 工具文档：用 chat template 渲染时的同款 JSON（OpenAI 格式）序列化后 tokenize
+            kept_tools_json = "\n".join(
+                json.dumps(t, ensure_ascii=False) for t in _bfcl_to_openai_tools(kept_funcs)
+            )
+            all_tools_json = "\n".join(
+                json.dumps(t, ensure_ascii=False) for t in _bfcl_to_openai_tools(func_list)
+            )
+            tools_tokens = len(tokenizer.encode(kept_tools_json, add_special_tokens=False))
+            all_tools_tokens = len(tokenizer.encode(all_tools_json, add_special_tokens=False))
+            user_prompt_tokens = len(tokenizer.encode(sample["user_prompt"], add_special_tokens=False))
             prompts.append(prompt)
             metas.append({
                 "global_idx": global_idx,
@@ -88,6 +99,9 @@ def _run_mode(yaml_args, mode, rate, rows, tokenizer, ranker, llm, max_total_tok
                 "n_gt_funcs": len(gt_funcs),
                 "recall": recall,
                 "precision": precision,
+                "tools_tokens": tools_tokens,
+                "all_tools_tokens": all_tools_tokens,
+                "user_prompt_tokens": user_prompt_tokens,
                 "reranker_s": reranker_s,
                 "build_s": build_s,
                 "prompt_tokens": prompt_tokens,
@@ -117,6 +131,9 @@ def _run_mode(yaml_args, mode, rate, rows, tokenizer, ranker, llm, max_total_tok
                 "llm_s": llm_s_per,
                 "total_s": m["reranker_s"] + m["build_s"] + llm_s_per,
                 "prompt_tokens": m["prompt_tokens"],
+                "tools_tokens": m["tools_tokens"],
+                "all_tools_tokens": m["all_tools_tokens"],
+                "user_prompt_tokens": m["user_prompt_tokens"],
                 "pred_tokens": len(outs[j].outputs[0].token_ids),
             })
     return timings
@@ -178,6 +195,9 @@ def main():
             "build_s": sum(t["build_s"] for t in ts) / n,
             "total_s": sum(t["total_s"] for t in ts) / n,
             "prompt_tokens": sum(t["prompt_tokens"] for t in ts) / n,
+            "tools_tokens": sum(t["tools_tokens"] for t in ts) / n,
+            "all_tools_tokens": sum(t["all_tools_tokens"] for t in ts) / n,
+            "user_prompt_tokens": sum(t["user_prompt_tokens"] for t in ts) / n,
             "pred_tokens": sum(t["pred_tokens"] for t in ts) / n,
             "n_tools_kept": sum(t["n_tools_kept"] for t in ts) / n,
             "n_gt_funcs": sum(t["n_gt_funcs"] for t in ts) / n,
@@ -186,32 +206,43 @@ def main():
         }
 
     def _print_table(title, groups, base_by_cat):
-        """打印一张表。groups: {label: agg_dict}；base_by_cat: {category: baseline agg} 算加速比。"""
+        """打印两张表：主表（recall/precision/速度）+ token 拆分表。"""
         print("\n" + "=" * 80)
         print(title)
         print("=" * 80)
-        print(f"{'group':<30} {'n':>4} {'recall':>7} {'precision':>10} {'gt':>5} {'tools':>6} {'total':>8} {'prompt_tok':>11}")
+        # 主表：召回/精度 + 速度
+        print(f"{'group':<26} {'n':>4} {'recall':>7} {'precision':>9} {'rerank':>8} {'llm':>8} {'total':>8} {'speedup':>8}")
+        base = base_by_cat or {g: a for g, a in groups.items() if g == "baseline"}
+        base_total = next((a["total_s"] for a in base.values() if a), None) if base else None
         for label, a in groups.items():
             if a is None:
-                print(f"{label:<30} {'-':>4} (无样本)")
+                print(f"{label:<26} {'-':>4} (无样本)")
                 continue
-            print(f"{label:<30} {a['n']:>4} {a['recall']:>7.3f} {a['precision']:>10.3f} {a['n_gt_funcs']:>5.1f} {a['n_tools_kept']:>6.1f} {a['total_s']:>8.4f} {a['prompt_tokens']:>11.1f}")
+            sp = (base_total / a["total_s"]) if base_total and a["total_s"] else 0
+            print(f"{label:<26} {a['n']:>4} {a['recall']:>7.3f} {a['precision']:>9.3f} {a['reranker_s']:>8.4f} {a['llm_s']:>8.4f} {a['total_s']:>8.4f} {sp:>7.2f}x")
+        # token 拆分表
+        print("\n  token 拆分（平均）:")
+        print(f"  {'group':<26} {'tools_kept':>11} {'tools_tok':>11} {'all_tools_tok':>15} {'user_prompt_tok':>16} {'prompt_tok':>11}")
+        for label, a in groups.items():
+            if a is None:
+                continue
+            print(f"  {label:<26} {a['n_tools_kept']:>11.1f} {a['tools_tokens']:>11.0f} {a['all_tools_tokens']:>15.0f} {a['user_prompt_tokens']:>16.0f} {a['prompt_tokens']:>11.0f}")
 
     # 总体汇总（所有类别合计）
     overall = {m: _agg(ts) for m, ts in all_results.items()}
     _print_table("Reranker 召回/精度 + 速度·总体（每条平均）", overall, None)
-    # 总体加速比
+    # 总体压缩比
     base_overall = overall.get("baseline")
     if base_overall:
-        print("\n长度与加速比·总体（vs baseline）:")
+        print("\n压缩比·总体（vs baseline）:")
         for m, a in overall.items():
             if m == "baseline" or a is None:
                 continue
-            sp = base_overall["total_s"] / a["total_s"] if a["total_s"] else 0
-            cr = base_overall["prompt_tokens"] / a["prompt_tokens"] if a["prompt_tokens"] else 0
-            print(f"  {m}: recall={a['recall']:.3f} precision={a['precision']:.3f}  "
-                  f"prompt {a['prompt_tokens']:.0f}tok (压缩{1/cr:.2f}x)  "
-                  f"total {a['total_s']:.4f}s  speedup {sp:.2f}x")
+            tool_cr = base_overall["all_tools_tokens"] / a["tools_tokens"] if a["tools_tokens"] else 0
+            prompt_cr = base_overall["prompt_tokens"] / a["prompt_tokens"] if a["prompt_tokens"] else 0
+            print(f"  {m}: recall={a['recall']:.3f}  "
+                  f"工具文档 {a['tools_tokens']:.0f}tok (压缩{tool_cr:.2f}x)  "
+                  f"prompt {a['prompt_tokens']:.0f}tok (压缩{prompt_cr:.2f}x)")
 
     # 分类别汇总
     categories = sorted({t["official_category"] for ts in all_results.values() for t in ts})
@@ -229,15 +260,15 @@ def main():
         # 该类别的加速比 + recall
         b = base_by_cat.get(cat)
         if b:
-            print(f"  长度与加速比（vs baseline）:")
+            print(f"  压缩比（vs baseline）:")
             for m, a in groups.items():
                 if m == "baseline" or a is None:
                     continue
-                sp = b["total_s"] / a["total_s"] if a["total_s"] else 0
-                cr = b["prompt_tokens"] / a["prompt_tokens"] if a["prompt_tokens"] else 0
-                print(f"    {m}: recall={a['recall']:.3f} precision={a['precision']:.3f}  "
-                      f"prompt {a['prompt_tokens']:.0f}tok (压缩{1/cr:.2f}x)  "
-                      f"total {a['total_s']:.4f}s  speedup {sp:.2f}x")
+                tool_cr = b["all_tools_tokens"] / a["tools_tokens"] if a["tools_tokens"] else 0
+                prompt_cr = b["prompt_tokens"] / a["prompt_tokens"] if a["prompt_tokens"] else 0
+                print(f"    {m}: recall={a['recall']:.3f}  "
+                      f"工具文档 {a['tools_tokens']:.0f}tok (压缩{tool_cr:.2f}x)  "
+                      f"prompt {a['prompt_tokens']:.0f}tok (压缩{prompt_cr:.2f}x)")
 
     # 写 JSON：总体 + 分类别
     out = {"overall": overall, "by_category": summary_by_cat, "per_sample": all_results}
