@@ -70,14 +70,17 @@ def _run_mode(yaml_args, mode, rate, rows, tokenizer, ranker, llm, max_total_tok
             t0 = time.perf_counter()
             prompt, _ = _build_prompt(tokenizer, kept_funcs, sample["user_prompt"], max_total_token, max_gen)
             build_s = time.perf_counter() - t0
+            prompt_tokens = len(tokenizer.encode(prompt, add_special_tokens=False))
             prompts.append(prompt)
             metas.append({
                 "global_idx": global_idx,
                 "id": sample["id"],
+                "official_category": sample["official_category"],
                 "n_tools_total": len(func_list),
                 "n_tools_kept": len(kept_funcs),
                 "reranker_s": reranker_s,
                 "build_s": build_s,
+                "prompt_tokens": prompt_tokens,
             })
             global_idx += 1
 
@@ -93,12 +96,14 @@ def _run_mode(yaml_args, mode, rate, rows, tokenizer, ranker, llm, max_total_tok
                 continue  # warmup 样本不计入统计
             timings.append({
                 "id": m["id"],
+                "official_category": m["official_category"],
                 "n_tools_total": m["n_tools_total"],
                 "n_tools_kept": m["n_tools_kept"],
                 "reranker_s": m["reranker_s"],
                 "build_s": m["build_s"],
                 "llm_s": llm_s_per,
                 "total_s": m["reranker_s"] + m["build_s"] + llm_s_per,
+                "prompt_tokens": m["prompt_tokens"],
                 "pred_tokens": len(outs[j].outputs[0].token_ids),
             })
     return timings
@@ -148,43 +153,77 @@ def main():
         all_results[f"compress_func_{rate}"] = t_comp
 
     # ---- 汇总 ----
-    print("\n" + "=" * 80)
-    print("速度汇总（每条平均耗时，秒）")
-    print("=" * 80)
-    print(f"{'mode':<22} {'reranker':>10} {'llm':>10} {'build':>10} {'total':>10} {'pred_tok':>10} {'n_tools_kept':>14}")
-    base_total = None
-    summary = {}
-    for mode, ts in all_results.items():
+    def _agg(ts):
+        """算一组 timings 的平均统计。"""
         n = len(ts)
-        reranker_avg = sum(t["reranker_s"] for t in ts) / n
-        llm_avg = sum(t["llm_s"] for t in ts) / n
-        build_avg = sum(t["build_s"] for t in ts) / n
-        total_avg = sum(t["total_s"] for t in ts) / n
-        pred_tok_avg = sum(t["pred_tokens"] for t in ts) / n
-        n_tools_avg = sum(t["n_tools_kept"] for t in ts) / n
-        if mode == "baseline":
-            base_total = total_avg
-        speedup = base_total / total_avg if base_total else 0
-        print(f"{mode:<22} {reranker_avg:>10.4f} {llm_avg:>10.4f} {build_avg:>10.4f} {total_avg:>10.4f} {pred_tok_avg:>10.1f} {n_tools_avg:>14.1f}")
-        summary[mode] = {
-            "reranker_s": reranker_avg, "llm_s": llm_avg, "build_s": build_avg,
-            "total_s": total_avg, "pred_tokens": pred_tok_avg, "n_tools_kept": n_tools_avg,
-            "speedup_vs_baseline": speedup,
+        if n == 0:
+            return None
+        return {
+            "n": n,
+            "reranker_s": sum(t["reranker_s"] for t in ts) / n,
+            "llm_s": sum(t["llm_s"] for t in ts) / n,
+            "build_s": sum(t["build_s"] for t in ts) / n,
+            "total_s": sum(t["total_s"] for t in ts) / n,
+            "prompt_tokens": sum(t["prompt_tokens"] for t in ts) / n,
+            "pred_tokens": sum(t["pred_tokens"] for t in ts) / n,
+            "n_tools_kept": sum(t["n_tools_kept"] for t in ts) / n,
         }
 
-    print("\n" + "=" * 80)
-    print("加速比（vs baseline，>1 表示更快）")
-    print("=" * 80)
-    for mode, s in summary.items():
-        if mode == "baseline":
-            continue
-        print(f"{mode}: total={s['total_s']:.4f}s  speedup={s['speedup_vs_baseline']:.2f}x  "
-              f"(n_tools {s['n_tools_kept']:.1f} vs baseline全量)")
+    def _print_table(title, groups, base_by_cat):
+        """打印一张表。groups: {label: agg_dict}；base_by_cat: {category: baseline agg} 算加速比。"""
+        print("\n" + "=" * 80)
+        print(title)
+        print("=" * 80)
+        print(f"{'group':<46} {'n':>4} {'reranker':>9} {'llm':>9} {'total':>9} {'prompt_tok':>11} {'tools':>6}")
+        for label, a in groups.items():
+            if a is None:
+                print(f"{label:<46} {'-':>4} (无样本)")
+                continue
+            print(f"{label:<46} {a['n']:>4} {a['reranker_s']:>9.4f} {a['llm_s']:>9.4f} {a['total_s']:>9.4f} {a['prompt_tokens']:>11.1f} {a['n_tools_kept']:>6.1f}")
 
-    # 写 JSON
+    # 总体汇总（所有类别合计）
+    overall = {m: _agg(ts) for m, ts in all_results.items()}
+    _print_table("速度汇总·总体（每条平均耗时，秒）", overall, None)
+    # 总体加速比
+    base_overall = overall.get("baseline")
+    if base_overall:
+        print("\n长度与加速比·总体（vs baseline）:")
+        for m, a in overall.items():
+            if m == "baseline" or a is None:
+                continue
+            sp = base_overall["total_s"] / a["total_s"] if a["total_s"] else 0
+            cr = base_overall["prompt_tokens"] / a["prompt_tokens"] if a["prompt_tokens"] else 0
+            print(f"  {m}: prompt {a['prompt_tokens']:.0f}tok (压缩{1/cr:.2f}x)  total {a['total_s']:.4f}s  speedup {sp:.2f}x")
+
+    # 分类别汇总
+    categories = sorted({t["official_category"] for ts in all_results.values() for t in ts})
+    summary_by_cat = {}  # {category: {mode: agg}}
+    base_by_cat = {}
+    for cat in categories:
+        groups = {}
+        for m, ts in all_results.items():
+            sub = [t for t in ts if t["official_category"] == cat]
+            groups[f"{m}"] = _agg(sub)
+            if m == "baseline" and groups[m]:
+                base_by_cat[cat] = groups[m]
+        summary_by_cat[cat] = groups
+        _print_table(f"速度汇总·{cat}（每条平均耗时，秒）", groups, base_by_cat)
+        # 该类别的加速比
+        b = base_by_cat.get(cat)
+        if b:
+            print(f"  长度与加速比（vs baseline）:")
+            for m, a in groups.items():
+                if m == "baseline" or a is None:
+                    continue
+                sp = b["total_s"] / a["total_s"] if a["total_s"] else 0
+                cr = b["prompt_tokens"] / a["prompt_tokens"] if a["prompt_tokens"] else 0
+                print(f"    {m}: prompt {a['prompt_tokens']:.0f}tok (压缩{1/cr:.2f}x)  total {a['total_s']:.4f}s  speedup {sp:.2f}x")
+
+    # 写 JSON：总体 + 分类别
+    out = {"overall": overall, "by_category": summary_by_cat, "per_sample": all_results}
     out_path = os.path.join(os.path.dirname(cfg.get("_result_path") or "."), "benchmark.json")
     with open(out_path, "w", encoding="utf-8") as f:
-        json.dump({"summary": summary, "per_sample": all_results}, f, ensure_ascii=False, indent=2)
+        json.dump(out, f, ensure_ascii=False, indent=2)
     print(f"\n详细数据写入: {out_path}")
 
 
