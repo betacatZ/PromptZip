@@ -56,6 +56,9 @@ def _run_mode(yaml_args, mode, rate, rows, tokenizer, ranker, llm, max_total_tok
         for sample in batch:
             query = _extract_current_turn(sample["user_prompt"])
             func_list = sample["function"]
+            # ground_truth 需要的工具集
+            gt = sample.get("ground_truth") or []
+            gt_funcs = {list(it.keys())[0] for it in gt} if gt else set()
             if mode == "compress_func" and ranker is not None:
                 t0 = time.perf_counter()
                 kept_funcs, kept_names = _compress_tools(
@@ -66,6 +69,10 @@ def _run_mode(yaml_args, mode, rate, rows, tokenizer, ranker, llm, max_total_tok
                 kept_funcs = func_list
                 kept_names = {f["name"] for f in func_list}
                 reranker_s = 0.0
+            # reranker 召回率：gt 工具里被保留的比例（baseline 全保留 = 1.0）
+            recall = (len(kept_names & gt_funcs) / len(gt_funcs)) if gt_funcs else 1.0
+            # 精确率：保留的工具里有多少是 gt 需要的（衡量是否留了无关工具）
+            precision = (len(kept_names & gt_funcs) / len(kept_names)) if kept_names else 0.0
 
             t0 = time.perf_counter()
             prompt, _ = _build_prompt(tokenizer, kept_funcs, sample["user_prompt"], max_total_token, max_gen)
@@ -78,6 +85,9 @@ def _run_mode(yaml_args, mode, rate, rows, tokenizer, ranker, llm, max_total_tok
                 "official_category": sample["official_category"],
                 "n_tools_total": len(func_list),
                 "n_tools_kept": len(kept_funcs),
+                "n_gt_funcs": len(gt_funcs),
+                "recall": recall,
+                "precision": precision,
                 "reranker_s": reranker_s,
                 "build_s": build_s,
                 "prompt_tokens": prompt_tokens,
@@ -99,6 +109,9 @@ def _run_mode(yaml_args, mode, rate, rows, tokenizer, ranker, llm, max_total_tok
                 "official_category": m["official_category"],
                 "n_tools_total": m["n_tools_total"],
                 "n_tools_kept": m["n_tools_kept"],
+                "n_gt_funcs": m["n_gt_funcs"],
+                "recall": m["recall"],
+                "precision": m["precision"],
                 "reranker_s": m["reranker_s"],
                 "build_s": m["build_s"],
                 "llm_s": llm_s_per,
@@ -167,6 +180,9 @@ def main():
             "prompt_tokens": sum(t["prompt_tokens"] for t in ts) / n,
             "pred_tokens": sum(t["pred_tokens"] for t in ts) / n,
             "n_tools_kept": sum(t["n_tools_kept"] for t in ts) / n,
+            "n_gt_funcs": sum(t["n_gt_funcs"] for t in ts) / n,
+            "recall": sum(t["recall"] for t in ts) / n,
+            "precision": sum(t["precision"] for t in ts) / n,
         }
 
     def _print_table(title, groups, base_by_cat):
@@ -174,16 +190,16 @@ def main():
         print("\n" + "=" * 80)
         print(title)
         print("=" * 80)
-        print(f"{'group':<46} {'n':>4} {'reranker':>9} {'llm':>9} {'total':>9} {'prompt_tok':>11} {'tools':>6}")
+        print(f"{'group':<30} {'n':>4} {'recall':>7} {'precision':>10} {'gt':>5} {'tools':>6} {'total':>8} {'prompt_tok':>11}")
         for label, a in groups.items():
             if a is None:
-                print(f"{label:<46} {'-':>4} (无样本)")
+                print(f"{label:<30} {'-':>4} (无样本)")
                 continue
-            print(f"{label:<46} {a['n']:>4} {a['reranker_s']:>9.4f} {a['llm_s']:>9.4f} {a['total_s']:>9.4f} {a['prompt_tokens']:>11.1f} {a['n_tools_kept']:>6.1f}")
+            print(f"{label:<30} {a['n']:>4} {a['recall']:>7.3f} {a['precision']:>10.3f} {a['n_gt_funcs']:>5.1f} {a['n_tools_kept']:>6.1f} {a['total_s']:>8.4f} {a['prompt_tokens']:>11.1f}")
 
     # 总体汇总（所有类别合计）
     overall = {m: _agg(ts) for m, ts in all_results.items()}
-    _print_table("速度汇总·总体（每条平均耗时，秒）", overall, None)
+    _print_table("Reranker 召回/精度 + 速度·总体（每条平均）", overall, None)
     # 总体加速比
     base_overall = overall.get("baseline")
     if base_overall:
@@ -193,7 +209,9 @@ def main():
                 continue
             sp = base_overall["total_s"] / a["total_s"] if a["total_s"] else 0
             cr = base_overall["prompt_tokens"] / a["prompt_tokens"] if a["prompt_tokens"] else 0
-            print(f"  {m}: prompt {a['prompt_tokens']:.0f}tok (压缩{1/cr:.2f}x)  total {a['total_s']:.4f}s  speedup {sp:.2f}x")
+            print(f"  {m}: recall={a['recall']:.3f} precision={a['precision']:.3f}  "
+                  f"prompt {a['prompt_tokens']:.0f}tok (压缩{1/cr:.2f}x)  "
+                  f"total {a['total_s']:.4f}s  speedup {sp:.2f}x")
 
     # 分类别汇总
     categories = sorted({t["official_category"] for ts in all_results.values() for t in ts})
@@ -207,8 +225,8 @@ def main():
             if m == "baseline" and groups[m]:
                 base_by_cat[cat] = groups[m]
         summary_by_cat[cat] = groups
-        _print_table(f"速度汇总·{cat}（每条平均耗时，秒）", groups, base_by_cat)
-        # 该类别的加速比
+        _print_table(f"Reranker 召回/精度 + 速度·{cat}（每条平均）", groups, base_by_cat)
+        # 该类别的加速比 + recall
         b = base_by_cat.get(cat)
         if b:
             print(f"  长度与加速比（vs baseline）:")
@@ -217,7 +235,9 @@ def main():
                     continue
                 sp = b["total_s"] / a["total_s"] if a["total_s"] else 0
                 cr = b["prompt_tokens"] / a["prompt_tokens"] if a["prompt_tokens"] else 0
-                print(f"    {m}: prompt {a['prompt_tokens']:.0f}tok (压缩{1/cr:.2f}x)  total {a['total_s']:.4f}s  speedup {sp:.2f}x")
+                print(f"    {m}: recall={a['recall']:.3f} precision={a['precision']:.3f}  "
+                      f"prompt {a['prompt_tokens']:.0f}tok (压缩{1/cr:.2f}x)  "
+                      f"total {a['total_s']:.4f}s  speedup {sp:.2f}x")
 
     # 写 JSON：总体 + 分类别
     out = {"overall": overall, "by_category": summary_by_cat, "per_sample": all_results}
