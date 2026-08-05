@@ -38,13 +38,15 @@ def _run_mode(yaml_args, mode, rate, rows, tokenizer, ranker, llm, max_total_tok
 
     warmup: 前 N 条样本照常跑（预热模型/CUDA/KV cache），但不计入 timings 统计。
     """
-    sampling_params = SamplingParams(
-        temperature=yaml_args["llm_config"]["sampling"].get("temperature", 0.0),
-        max_tokens=max_gen,
-        top_p=yaml_args["llm_config"]["sampling"].get("top_p", 1.0),
+    # 测 prefill：用 max_tokens=1（decode 几乎为 0），wall-clock 时间 ≈ prefill 时间。
+    # vLLM metrics 字段在非 streaming 模式下为 None，改用此法测纯 prefill。
+    prefill_sp = SamplingParams(
+        temperature=0.0,
+        max_tokens=1,  # 只生成 1 token，时间主体是 prefill
+        top_p=1.0,
     )
 
-    timings = []  # 每条: {id, n_tools_total, n_tools_kept, reranker_s, llm_s, total_s, pred_tokens}
+    timings = []  # 每条: {id, ..., reranker_s, prefill_s, total_s, ...}
     batch_size = yaml_args["exp_config"].get("batch_size", 8)
     global_idx = 0  # 全局样本序号，用于 warmup 判断
 
@@ -108,24 +110,18 @@ def _run_mode(yaml_args, mode, rate, rows, tokenizer, ranker, llm, max_total_tok
             })
             global_idx += 1
 
-        # ---- consumer 阶段：llm.generate ----
+        # ---- consumer 阶段：llm.generate（max_tokens=1，时间≈prefill）----
         t0 = time.perf_counter()
         with torch.cuda.device("cuda:0"):
-            outs = llm.generate(prompts, sampling_params)
-        llm_s_batch = time.perf_counter() - t0
-        llm_s_per = llm_s_batch / len(batch)
+            llm.generate(prompts, prefill_sp)
+        prefill_s_per = (time.perf_counter() - t0) / len(batch)
 
         for j, m in enumerate(metas):
             if m["global_idx"] < warmup:
                 continue  # warmup 样本不计入统计
-            # 从 vLLM metrics 取 prefill 时间（TTFT = first_token_time - arrival_time）
-            metrics = getattr(outs[j], "metrics", None)
-            prefill_s = None
-            if metrics is not None:
-                arrival = getattr(metrics, "arrival_time", None)
-                first_tok = getattr(metrics, "first_token_time", None)
-                if arrival is not None and first_tok is not None:
-                    prefill_s = first_tok - arrival
+            # prefill = 用 max_tokens=1 的 wall-clock 时间（vLLM metrics 在非 streaming 下为 None，
+            # 改用此法；decode 只有 1 token，时间主体是 prefill）
+            prefill_s = prefill_s_per
             timings.append({
                 "id": m["id"],
                 "official_category": m["official_category"],
@@ -136,14 +132,13 @@ def _run_mode(yaml_args, mode, rate, rows, tokenizer, ranker, llm, max_total_tok
                 "precision": m["precision"],
                 "reranker_s": m["reranker_s"],
                 "build_s": m["build_s"],
-                "llm_s": llm_s_per,
                 "prefill_s": prefill_s,
-                "total_s": m["reranker_s"] + m["build_s"] + llm_s_per,
+                # reranker + build + prefill = 端到端（不含 decode 生成）
+                "total_s": m["reranker_s"] + m["build_s"] + prefill_s,
                 "prompt_tokens": m["prompt_tokens"],
                 "tools_tokens": m["tools_tokens"],
                 "all_tools_tokens": m["all_tools_tokens"],
                 "user_prompt_tokens": m["user_prompt_tokens"],
-                "pred_tokens": len(outs[j].outputs[0].token_ids),
             })
     return timings
 
@@ -236,11 +231,6 @@ def main():
         all_results[f"compress_func_{rate}"] = t_comp
 
     # ---- 汇总 ----
-    def _safe_avg(vals):
-        """对可能含 None 的列表求平均（跳过 None）。全 None 返回 None。"""
-        xs = [v for v in vals if v is not None]
-        return sum(xs) / len(xs) if xs else None
-
     def _agg(ts):
         """算一组 timings 的平均统计。"""
         n = len(ts)
@@ -249,16 +239,14 @@ def main():
         return {
             "n": n,
             "reranker_s": sum(t["reranker_s"] for t in ts) / n,
-            "llm_s": sum(t["llm_s"] for t in ts) / n,
-            # prefill 可能 None（metrics 没拿到时），只算有值的
-            "prefill_s": _safe_avg([t.get("prefill_s") for t in ts]),
+            # prefill 用 max_tokens=1 的 wall-clock 时间（纯 prefill，无 decode 依赖）
+            "prefill_s": sum(t["prefill_s"] for t in ts) / n,
             "build_s": sum(t["build_s"] for t in ts) / n,
             "total_s": sum(t["total_s"] for t in ts) / n,
             "prompt_tokens": sum(t["prompt_tokens"] for t in ts) / n,
             "tools_tokens": sum(t["tools_tokens"] for t in ts) / n,
             "all_tools_tokens": sum(t["all_tools_tokens"] for t in ts) / n,
             "user_prompt_tokens": sum(t["user_prompt_tokens"] for t in ts) / n,
-            "pred_tokens": sum(t["pred_tokens"] for t in ts) / n,
             "n_tools_kept": sum(t["n_tools_kept"] for t in ts) / n,
             "n_gt_funcs": sum(t["n_gt_funcs"] for t in ts) / n,
             "recall": sum(t["recall"] for t in ts) / n,
@@ -287,13 +275,13 @@ def main():
                 print(f"{label:<26} {'-':>4} (无样本)")
                 continue
             pf = a["prefill_s"]
-            pf_str = f"{pf:>9.4f}" if pf is not None else f"{'N/A':>9}"
+            # prefill 必有值（_run_mode 已保证拿不到就抛异常），这里直接用
             if label == "baseline":
                 sp_str = "    -"
             else:
                 sp = (base_prefill / pf) if base_prefill and pf else 0
                 sp_str = f"{sp:>7.2f}x"
-            print(f"{label:<26} {a['n']:>4} {a['recall']:>7.3f} {a['precision']:>9.3f} {a['reranker_s']:>8.4f} {pf_str} {sp_str:>8}")
+            print(f"{label:<26} {a['n']:>4} {a['recall']:>7.3f} {a['precision']:>9.3f} {a['reranker_s']:>8.4f} {pf:>9.4f} {sp_str:>8}")
         # token 拆分表
         print("\n  token 拆分（平均）:")
         print(f"  {'group':<26} {'tools_kept':>11} {'tools_tok':>11} {'all_tools_tok':>15} {'user_prompt_tok':>16} {'prompt_tok':>11}")
@@ -314,8 +302,9 @@ def main():
                 continue
             tool_cr = base_overall["all_tools_tokens"] / a["tools_tokens"] if a["tools_tokens"] else 0
             prompt_cr = base_overall["prompt_tokens"] / a["prompt_tokens"] if a["prompt_tokens"] else 0
-            pf_sp = (base_overall["prefill_s"] / a["prefill_s"]) if base_overall["prefill_s"] and a["prefill_s"] else 0
-            print(f"  {m}: recall={a['recall']:.3f}  prefill {a['prefill_s']:.4f}s (speedup {pf_sp:.2f}x)  "
+            bpf, apf = base_overall["prefill_s"], a["prefill_s"]
+            pf_sp = (bpf / apf) if bpf and apf else 0
+            print(f"  {m}: recall={a['recall']:.3f}  prefill {apf:.4f}s (speedup {pf_sp:.2f}x)  "
                   f"工具文档 {a['tools_tokens']:.0f}tok (压缩{tool_cr:.2f}x)  "
                   f"prompt {a['prompt_tokens']:.0f}tok (压缩{prompt_cr:.2f}x)")
 
@@ -341,8 +330,11 @@ def main():
                     continue
                 tool_cr = b["all_tools_tokens"] / a["tools_tokens"] if a["tools_tokens"] else 0
                 prompt_cr = b["prompt_tokens"] / a["prompt_tokens"] if a["prompt_tokens"] else 0
-                pf_sp = (b["prefill_s"] / a["prefill_s"]) if b["prefill_s"] and a["prefill_s"] else 0
-                print(f"    {m}: recall={a['recall']:.3f}  prefill {a['prefill_s']:.4f}s (speedup {pf_sp:.2f}x)  "
+                bpf, apf = b["prefill_s"], a["prefill_s"]
+                pf_sp = (bpf / apf) if bpf and apf else None
+                pf_str = f"{apf:.4f}s" if apf is not None else "N/A"
+                sp_str = f"{pf_sp:.2f}x" if pf_sp is not None else "N/A"
+                print(f"    {m}: recall={a['recall']:.3f}  prefill {pf_str} (speedup {sp_str})  "
                       f"工具文档 {a['tools_tokens']:.0f}tok (压缩{tool_cr:.2f}x)  "
                       f"prompt {a['prompt_tokens']:.0f}tok (压缩{prompt_cr:.2f}x)")
 
