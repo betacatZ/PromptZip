@@ -33,8 +33,11 @@ from eval_bfcl_parallel_multi_turn import (  # noqa: E402
 )
 
 
-def _run_mode(yaml_args, mode, rate, rows, tokenizer, ranker, llm, max_total_token, max_gen, instruction):
-    """跑一个 mode（baseline/compress_func），返回 per-sample 耗时列表。"""
+def _run_mode(yaml_args, mode, rate, rows, tokenizer, ranker, llm, max_total_token, max_gen, instruction, warmup=0):
+    """跑一个 mode（baseline/compress_func），返回 per-sample 耗时列表。
+
+    warmup: 前 N 条样本照常跑（预热模型/CUDA/KV cache），但不计入 timings 统计。
+    """
     sampling_params = SamplingParams(
         temperature=yaml_args["llm_config"]["sampling"].get("temperature", 0.0),
         max_tokens=max_gen,
@@ -42,8 +45,8 @@ def _run_mode(yaml_args, mode, rate, rows, tokenizer, ranker, llm, max_total_tok
     )
 
     timings = []  # 每条: {id, n_tools_total, n_tools_kept, reranker_s, llm_s, total_s, pred_tokens}
-    # 用 batch 跑，但分段计时：reranker 在 producer 阶段（per-sample），llm 在 generate 阶段（per-batch）
     batch_size = yaml_args["exp_config"].get("batch_size", 8)
+    global_idx = 0  # 全局样本序号，用于 warmup 判断
 
     for i in tqdm(range(0, len(rows), batch_size), desc=f"[{mode} rate={rate}]"):
         batch = rows[i : i + batch_size]
@@ -66,15 +69,17 @@ def _run_mode(yaml_args, mode, rate, rows, tokenizer, ranker, llm, max_total_tok
 
             t0 = time.perf_counter()
             prompt, _ = _build_prompt(tokenizer, kept_funcs, sample["user_prompt"], max_total_token, max_gen)
-            build_s = time.perf_counter() - t0  # 拼 prompt 时间（含 token 化），单算
+            build_s = time.perf_counter() - t0
             prompts.append(prompt)
             metas.append({
+                "global_idx": global_idx,
                 "id": sample["id"],
                 "n_tools_total": len(func_list),
                 "n_tools_kept": len(kept_funcs),
                 "reranker_s": reranker_s,
                 "build_s": build_s,
             })
+            global_idx += 1
 
         # ---- consumer 阶段：llm.generate（per-batch 计时，均摊到每条）----
         t0 = time.perf_counter()
@@ -84,8 +89,14 @@ def _run_mode(yaml_args, mode, rate, rows, tokenizer, ranker, llm, max_total_tok
         llm_s_per = llm_s_batch / len(batch)
 
         for j, m in enumerate(metas):
+            if m["global_idx"] < warmup:
+                continue  # warmup 样本不计入统计
             timings.append({
-                **m,
+                "id": m["id"],
+                "n_tools_total": m["n_tools_total"],
+                "n_tools_kept": m["n_tools_kept"],
+                "reranker_s": m["reranker_s"],
+                "build_s": m["build_s"],
                 "llm_s": llm_s_per,
                 "total_s": m["reranker_s"] + m["build_s"] + llm_s_per,
                 "pred_tokens": len(outs[j].outputs[0].token_ids),
@@ -97,7 +108,8 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("-c", "--config", required=True)
     ap.add_argument("--debug", action="store_true", help="只用前 20 条")
-    ap.add_argument("--n", type=int, default=0, help="只用前 N 条（0=全部）")
+    ap.add_argument("-n", "--n", type=int, default=0, help="总样本数（含 warmup，0=全部）")
+    ap.add_argument("--warmup", type=int, default=0, help="前 N 条 warmup 不计入统计")
     ap.add_argument("--rates", type=str, default="", help="覆盖配置的 rate 列表，逗号分隔，如 6,8,10")
     args = ap.parse_args()
 
@@ -109,7 +121,10 @@ def main():
         rows = rows[: args.n]
     elif args.debug:
         rows = rows[:20]
-    print(f"样本数: {len(rows)}")
+    if args.warmup > len(rows):
+        print(f"[warn] warmup({args.warmup}) > 样本数({len(rows)})，统计样本为 0")
+    stat_n = max(0, len(rows) - args.warmup)
+    print(f"样本数: {len(rows)}（warmup {args.warmup} 条不计入，统计 {stat_n} 条）")
 
     tokenizer = AutoTokenizer.from_pretrained(cfg["llm_config"]["llm"]["model_name"], trust_remote_code=True)
     max_total_token = cfg["exp_config"].get("max_total_token", 32768)
@@ -123,13 +138,13 @@ def main():
     all_results = {}
     # baseline
     print("\n===== baseline =====")
-    t_base = _run_mode(cfg, "baseline", None, rows, tokenizer, ranker, llm, max_total_token, max_gen, instruction)
+    t_base = _run_mode(cfg, "baseline", None, rows, tokenizer, ranker, llm, max_total_token, max_gen, instruction, warmup=args.warmup)
     all_results["baseline"] = t_base
 
     # compress_func 各 rate
     for rate in rates:
         print(f"\n===== compress_func rate={rate} =====")
-        t_comp = _run_mode(cfg, "compress_func", rate, rows, tokenizer, ranker, llm, max_total_token, max_gen, instruction)
+        t_comp = _run_mode(cfg, "compress_func", rate, rows, tokenizer, ranker, llm, max_total_token, max_gen, instruction, warmup=args.warmup)
         all_results[f"compress_func_{rate}"] = t_comp
 
     # ---- 汇总 ----
