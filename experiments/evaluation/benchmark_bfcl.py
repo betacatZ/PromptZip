@@ -170,6 +170,7 @@ def main():
     ap.add_argument("-n", "--n", type=int, default=0, help="总样本数（含 warmup，0=全部）")
     ap.add_argument("--warmup", type=int, default=0, help="前 N 条 warmup 不计入统计")
     ap.add_argument("--rates", type=str, default="", help="覆盖配置的 rate 列表，逗号分隔，如 6,8,10")
+    ap.add_argument("--output", default="../output", help="输出根目录")
     args = ap.parse_args()
 
     with open(args.config, "r", encoding="utf-8") as f:
@@ -184,8 +185,16 @@ def main():
         print(f"[warn] warmup({args.warmup}) > 样本数({len(rows)})，统计样本为 0")
     stat_n = max(0, len(rows) - args.warmup)
 
-    # 报告双写：终端 + markdown 文件
-    report_dir = cfg.get("_result_path") or os.path.dirname(args.config) or "."
+    # 先算 rates（决定输出目录名）
+    rates = [float(x) for x in args.rates.split(",")] if args.rates else cfg["reranker_config"]["rate"]
+
+    # 报告双写：终端 + markdown 文件。输出到 output/<exp_name>/benchmark_n<N>_warmup<W>_rate<R>/
+    exp_name = cfg["exp_config"]["name"]
+    rate_tag = "rate" + "-".join(str(r) for r in rates)
+    sub = f"benchmark_n{args.n if args.n else 'all'}_warmup{args.warmup}_{rate_tag}"
+    if args.debug:
+        sub += "_debug"
+    report_dir = os.path.join(args.output, exp_name, sub)
     os.makedirs(report_dir, exist_ok=True)
     report_path = os.path.join(report_dir, "benchmark_report.md")
     report_file = open(report_path, "w", encoding="utf-8")
@@ -195,14 +204,13 @@ def main():
     print(f"# BFCL V4 Parallel Multi-Turn Benchmark 报告\n")
     print(f"- 配置: {args.config}")
     print(f"- 样本数: {len(rows)}（warmup {args.warmup} 条不计入，统计 {stat_n} 条）")
+    print(f"- 压缩率: {rates}")
     print(f"- 模型: {cfg['llm_config']['llm']['model_name']}")
 
     tokenizer = AutoTokenizer.from_pretrained(cfg["llm_config"]["llm"]["model_name"], trust_remote_code=True)
     max_total_token = cfg["exp_config"].get("max_total_token", 32768)
     max_gen = cfg["llm_config"]["sampling"].get("max_tokens", 1024)
     instruction = cfg["reranker_config"].get("instruction") or DEFAULT_INSTRUCTION
-
-    rates = [float(x) for x in args.rates.split(",")] if args.rates else cfg["reranker_config"]["rate"]
 
     ranker, llm = build_components(cfg)
 
