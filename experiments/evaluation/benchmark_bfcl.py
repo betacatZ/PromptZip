@@ -139,6 +139,30 @@ def _run_mode(yaml_args, mode, rate, rows, tokenizer, ranker, llm, max_total_tok
     return timings
 
 
+class Tee:
+    """stdout 双写：同时输出到终端和文件，保留 tqdm 进度条只显示终端。"""
+
+    def __init__(self, *files):
+        self.files = files
+
+    def write(self, s):
+        # tqdm 写 \r 开头的行不进文件（进度条刷新），只写终端
+        if s.startswith("\r"):
+            for f in self.files:
+                if hasattr(f, "isatty") and f.isatty():
+                    f.write(s)
+        else:
+            for f in self.files:
+                f.write(s)
+                if hasattr(f, "flush"):
+                    f.flush()
+
+    def flush(self):
+        for f in self.files:
+            if hasattr(f, "flush"):
+                f.flush()
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("-c", "--config", required=True)
@@ -159,7 +183,19 @@ def main():
     if args.warmup > len(rows):
         print(f"[warn] warmup({args.warmup}) > 样本数({len(rows)})，统计样本为 0")
     stat_n = max(0, len(rows) - args.warmup)
-    print(f"样本数: {len(rows)}（warmup {args.warmup} 条不计入，统计 {stat_n} 条）")
+
+    # 报告双写：终端 + markdown 文件
+    report_dir = cfg.get("_result_path") or os.path.dirname(args.config) or "."
+    os.makedirs(report_dir, exist_ok=True)
+    report_path = os.path.join(report_dir, "benchmark_report.md")
+    report_file = open(report_path, "w", encoding="utf-8")
+    orig_stdout = sys.stdout
+    sys.stdout = Tee(orig_stdout, report_file)
+
+    print(f"# BFCL V4 Parallel Multi-Turn Benchmark 报告\n")
+    print(f"- 配置: {args.config}")
+    print(f"- 样本数: {len(rows)}（warmup {args.warmup} 条不计入，统计 {stat_n} 条）")
+    print(f"- 模型: {cfg['llm_config']['llm']['model_name']}")
 
     tokenizer = AutoTokenizer.from_pretrained(cfg["llm_config"]["llm"]["model_name"], trust_remote_code=True)
     max_total_token = cfg["exp_config"].get("max_total_token", 32768)
@@ -272,10 +308,15 @@ def main():
 
     # 写 JSON：总体 + 分类别
     out = {"overall": overall, "by_category": summary_by_cat, "per_sample": all_results}
-    out_path = os.path.join(os.path.dirname(cfg.get("_result_path") or "."), "benchmark.json")
+    out_path = os.path.join(report_dir, "benchmark.json")
     with open(out_path, "w", encoding="utf-8") as f:
         json.dump(out, f, ensure_ascii=False, indent=2)
     print(f"\n详细数据写入: {out_path}")
+    print(f"报告写入: {report_path}")
+
+    # 恢复 stdout，关闭报告文件
+    sys.stdout = orig_stdout
+    report_file.close()
 
 
 if __name__ == "__main__":
