@@ -571,6 +571,92 @@ def evaluate_row(
     }
 
 
+# -------------------- AST 多口径判分 --------------------
+
+
+def _greedy_match_count(func_descriptions: list, model_output: list, ground_truth: list) -> int:
+    """贪心消除：对每个 GT 函数在剩余模型输出里找匹配（复用 simple_function_checker），返回匹配数。
+
+    与 parallel_function_checker_no_order 的区别：不要求 |P|=|G|，只数能配上的对数。
+    用于计算 |P ∩ G|，供 5 种 AST 口径判定。
+    """
+    matched_pred = set()
+    matched = 0
+    for gt_item in ground_truth:
+        if not isinstance(gt_item, dict) or not gt_item:
+            continue
+        func_name = list(gt_item.keys())[0]
+        func_desc = _find_description(func_descriptions, func_name)
+        if func_desc is None:
+            continue
+        for j in range(len(model_output)):
+            if j in matched_pred:
+                continue
+            if simple_function_checker(func_desc, model_output[j], gt_item)["valid"]:
+                matched_pred.add(j)
+                matched += 1
+                break
+    return matched
+
+
+def compute_ast_metrics(func_descriptions: list, model_output_text: str, ground_truth: list) -> dict:
+    """对一条 eval row 计算 5 种 AST 匹配口径。
+
+    设 G=ground_truth 函数调用集合，P=LLM 输出函数调用集合，匹配要求函数名+参数完全一致。
+      - exact_match:   P = G           （完全一致，不多不少）
+      - superset_match: G ⊆ P          （GT 全命中，允许多输出）
+      - subset_match:   P ⊆ G          （输出全在 GT 里，允许遗漏）
+      - top1_match:    |P ∩ G| ≥ 1     （至少命中 1 个）
+      - top3_match:    |P ∩ G| ≥ min(3, |G|)（至少 3 个或 GT<3 时全命中）
+
+    Returns:
+        {exact_match, superset_match, subset_match, top1_match, top3_match,
+         n_matched, n_gt, n_pred}
+    """
+    model_output = parse_model_output(model_output_text)
+    n_gt = len(ground_truth) if ground_truth else 0
+    n_pred = len(model_output)
+
+    # 边界：空 GT
+    if n_gt == 0:
+        # 空 GT 且空 P：精确/超集/子集都算对；top1/top3 无 GT 可命中算错
+        return {
+            "exact_match": n_pred == 0,
+            "superset_match": n_pred == 0,
+            "subset_match": True,  # P=∅ ⊆ G=∅ 恒成立
+            "top1_match": False,
+            "top3_match": False,
+            "n_matched": 0,
+            "n_gt": 0,
+            "n_pred": n_pred,
+        }
+
+    # 边界：有 GT 但 P 空
+    if n_pred == 0:
+        return {
+            "exact_match": False,
+            "superset_match": False,
+            "subset_match": True,  # P=∅ ⊆ G 恒成立
+            "top1_match": False,
+            "top3_match": False,
+            "n_matched": 0,
+            "n_gt": n_gt,
+            "n_pred": 0,
+        }
+
+    n_matched = _greedy_match_count(func_descriptions, model_output, ground_truth)
+    return {
+        "exact_match": n_matched == n_gt and n_pred == n_gt,
+        "superset_match": n_matched == n_gt,   # G ⊆ P：GT 全部被命中
+        "subset_match": n_matched == n_pred,  # P ⊆ G：输出全部命中
+        "top1_match": n_matched >= 1,
+        "top3_match": n_matched >= min(3, n_gt),
+        "n_matched": n_matched,
+        "n_gt": n_gt,
+        "n_pred": n_pred,
+    }
+
+
 def compute_accuracy(results: list[dict]) -> dict:
     """从 per-row 判分结果计算 overall + per-official_category + per-task_type 准确率。
 
@@ -602,3 +688,39 @@ def compute_accuracy(results: list[dict]) -> dict:
         "by_task_type": {k: {"accuracy": _acc(v), "num": len(v)} for k, v in by_tt.items()},
         "error_type_distribution": dict(err_dist),
     }
+
+
+def compute_ast_accuracy(results: list[dict]) -> dict:
+    """从 per-row AST 判分结果计算 5 种口径的准确率（overall + per-category + per-task_type）。
+
+    results: list[{ast: {exact_match, superset_match, subset_match, top1_match, top3_match, ...},
+                   official_category, task_type, ...}]
+    """
+    from collections import defaultdict
+
+    METRICS = ["exact_match", "superset_match", "subset_match", "top1_match", "top3_match"]
+
+    def _ast_acc(items, key):
+        if not items:
+            return 0.0
+        return sum(1 for r in items if r.get("ast", {}).get(key, False)) / len(items)
+
+    by_cat = defaultdict(list)
+    by_tt = defaultdict(list)
+    for r in results:
+        by_cat[r.get("official_category", "unknown")].append(r)
+        by_tt[r.get("task_type", "unknown")].append(r)
+
+    out = {
+        "num_samples": len(results),
+        "overall": {k: _ast_acc(results, k) for k in METRICS},
+        "by_category": {
+            k: {mk: _ast_acc(v, mk) for mk in METRICS} | {"num": len(v)}
+            for k, v in by_cat.items()
+        },
+        "by_task_type": {
+            k: {mk: _ast_acc(v, mk) for mk in METRICS} | {"num": len(v)}
+            for k, v in by_tt.items()
+        },
+    }
+    return out
