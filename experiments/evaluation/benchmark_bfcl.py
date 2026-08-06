@@ -236,11 +236,15 @@ def main():
         n = len(ts)
         if n == 0:
             return None
+        reranker_s = sum(t["reranker_s"] for t in ts) / n
+        # prefill 用 max_tokens=1 的 wall-clock 时间（纯 prefill，无 decode 依赖）
+        prefill_s = sum(t["prefill_s"] for t in ts) / n
         return {
             "n": n,
-            "reranker_s": sum(t["reranker_s"] for t in ts) / n,
-            # prefill 用 max_tokens=1 的 wall-clock 时间（纯 prefill，无 decode 依赖）
-            "prefill_s": sum(t["prefill_s"] for t in ts) / n,
+            "reranker_s": reranker_s,
+            "prefill_s": prefill_s,
+            # e2e = reranker + prefill，即压缩场景下的端到端耗时（不含 decode）
+            "e2e_s": reranker_s + prefill_s,
             "build_s": sum(t["build_s"] for t in ts) / n,
             "total_s": sum(t["total_s"] for t in ts) / n,
             "prompt_tokens": sum(t["prompt_tokens"] for t in ts) / n,
@@ -255,12 +259,11 @@ def main():
 
     def _print_table(title, groups, base_by_cat):
         """打印两张表：主表（recall/precision/速度）+ token 拆分表。"""
-        print("\n" + "=" * 80)
+        print("\n" + "=" * 90)
         print(title)
-        print("=" * 80)
-        # 主表：召回/精度 + 速度。重点看 prefill（不含 decode，纯 prompt 处理时间）。
-        # speedup 用 prefill 算（baseline 自身显示 -）
-        print(f"{'group':<26} {'n':>4} {'recall':>7} {'precision':>9} {'rerank':>8} {'prefill':>9} {'speedup':>8}")
+        print("=" * 90)
+        # 主表：召回/精度 + 速度。speedup = baseline_prefill / (reranker_s + prefill_s)
+        print(f"{'group':<26} {'n':>4} {'recall':>7} {'precision':>9} {'rerank':>8} {'prefill':>9} {'e2e':>9} {'speedup':>8}")
         # 取本表 baseline 的 prefill 作参照
         base_prefill = None
         if "baseline" in groups and groups["baseline"]:
@@ -275,13 +278,14 @@ def main():
                 print(f"{label:<26} {'-':>4} (无样本)")
                 continue
             pf = a["prefill_s"]
-            # prefill 必有值（_run_mode 已保证拿不到就抛异常），这里直接用
+            e2e = a["e2e_s"]
+            # speedup = baseline_prefill / (reranker_s + prefill_s)
             if label == "baseline":
                 sp_str = "    -"
             else:
-                sp = (base_prefill / pf) if base_prefill and pf else 0
+                sp = (base_prefill / e2e) if base_prefill and e2e else 0
                 sp_str = f"{sp:>7.2f}x"
-            print(f"{label:<26} {a['n']:>4} {a['recall']:>7.3f} {a['precision']:>9.3f} {a['reranker_s']:>8.4f} {pf:>9.4f} {sp_str:>8}")
+            print(f"{label:<26} {a['n']:>4} {a['recall']:>7.3f} {a['precision']:>9.3f} {a['reranker_s']:>8.4f} {pf:>9.4f} {e2e:>9.4f} {sp_str:>8}")
         # token 拆分表
         print("\n  token 拆分（平均）:")
         print(f"  {'group':<26} {'tools_kept':>11} {'tools_tok':>11} {'all_tools_tok':>15} {'user_prompt_tok':>16} {'prompt_tok':>11}")
@@ -296,15 +300,15 @@ def main():
     # 总体压缩比
     base_overall = overall.get("baseline")
     if base_overall:
-        print("\n压缩比·总体（vs baseline，speedup 基于 prefill）:")
+        print("\n压缩比·总体（vs baseline，speedup 基于 e2e = reranker + prefill）:")
         for m, a in overall.items():
             if m == "baseline" or a is None:
                 continue
             tool_cr = base_overall["all_tools_tokens"] / a["tools_tokens"] if a["tools_tokens"] else 0
             prompt_cr = base_overall["prompt_tokens"] / a["prompt_tokens"] if a["prompt_tokens"] else 0
-            bpf, apf = base_overall["prefill_s"], a["prefill_s"]
-            pf_sp = (bpf / apf) if bpf and apf else 0
-            print(f"  {m}: recall={a['recall']:.3f}  prefill {apf:.4f}s (speedup {pf_sp:.2f}x)  "
+            bpf, e2e = base_overall["prefill_s"], a["e2e_s"]
+            e2e_sp = (bpf / e2e) if bpf and e2e else 0
+            print(f"  {m}: recall={a['recall']:.3f}  reranker {a['reranker_s']:.4f}s + prefill {a['prefill_s']:.4f}s = e2e {e2e:.4f}s (speedup {e2e_sp:.2f}x)  "
                   f"工具文档 {a['tools_tokens']:.0f}tok (压缩{tool_cr:.2f}x)  "
                   f"prompt {a['prompt_tokens']:.0f}tok (压缩{prompt_cr:.2f}x)")
 
@@ -324,17 +328,17 @@ def main():
         # 该类别的压缩比 + prefill speedup
         b = base_by_cat.get(cat)
         if b:
-            print(f"  压缩比（vs baseline，speedup 基于 prefill）:")
+            print(f"  压缩比（vs baseline，speedup 基于 e2e = reranker + prefill）:")
             for m, a in groups.items():
                 if m == "baseline" or a is None:
                     continue
                 tool_cr = b["all_tools_tokens"] / a["tools_tokens"] if a["tools_tokens"] else 0
                 prompt_cr = b["prompt_tokens"] / a["prompt_tokens"] if a["prompt_tokens"] else 0
-                bpf, apf = b["prefill_s"], a["prefill_s"]
-                pf_sp = (bpf / apf) if bpf and apf else None
-                pf_str = f"{apf:.4f}s" if apf is not None else "N/A"
-                sp_str = f"{pf_sp:.2f}x" if pf_sp is not None else "N/A"
-                print(f"    {m}: recall={a['recall']:.3f}  prefill {pf_str} (speedup {sp_str})  "
+                bpf, e2e = b["prefill_s"], a["e2e_s"]
+                e2e_sp = (bpf / e2e) if bpf and e2e else None
+                e2e_str = f"{e2e:.4f}s" if e2e is not None else "N/A"
+                sp_str = f"{e2e_sp:.2f}x" if e2e_sp is not None else "N/A"
+                print(f"    {m}: recall={a['recall']:.3f}  reranker {a['reranker_s']:.4f}s + prefill {a['prefill_s']:.4f}s = e2e {e2e_str} (speedup {sp_str})  "
                       f"工具文档 {a['tools_tokens']:.0f}tok (压缩{tool_cr:.2f}x)  "
                       f"prompt {a['prompt_tokens']:.0f}tok (压缩{prompt_cr:.2f}x)")
 
