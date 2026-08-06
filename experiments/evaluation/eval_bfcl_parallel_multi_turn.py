@@ -335,16 +335,20 @@ async def predict(yaml_args, mode: str, rate, json_path: str, enable_test: bool 
 
             for idx, m in enumerate(meta):
                 pred_text = preds[idx].outputs[0].text
-                # 逐条判分，把得分写进 result，方便直接看每条对错
+                # 逐条判分：evaluate_row 拿官方无序并行口径（用于 error_type 错误分布），
+                # compute_ast_metrics 拿 5 种 AST 口径（exact/superset/subset/top1/top3）。
+                # valid 字段改用 AST 的 exact_match（与 evaluate_row 的无序并行口径等价）。
                 res = bfcl_metrics.evaluate_row(m["function"], pred_text, m["ground_truth"])
+                ast = bfcl_metrics.compute_ast_metrics(m["function"], pred_text, m["ground_truth"])
                 results[m["id"]] = {
                     "mode": mode,
                     "rate": rate,
                     "pred": pred_text,
-                    "valid": res["valid"],
+                    "valid": ast["exact_match"],
                     "error_type": res["error_type"],
                     "error": res["error"],
                     "parsed_calls": res["model_output"],
+                    "ast": ast,
                     **m,
                 }
 
@@ -378,6 +382,16 @@ def score(run_save_dir: str, json_path: str):
             valid = res["valid"]
             error_type = res["error_type"]
             pred_parsed = res["model_output"]
+        # AST 5 口径：优先用 result 里已写的 ast；旧 result 缺则重算
+        if "ast" in data:
+            ast = data["ast"]
+        else:
+            if "function" not in data:
+                raise RuntimeError(
+                    f"result.json 中 {rid} 缺 ast 字段又无 function 字段，无法重算 AST。请重新跑 predict 生成完整 result。"
+                )
+            ast = bfcl_metrics.compute_ast_metrics(data["function"], data["pred"], data["ground_truth"])
+            results[rid]["ast"] = ast  # 回写，下面统一 dump
         judged.append(
             {
                 "id": rid,
@@ -387,12 +401,17 @@ def score(run_save_dir: str, json_path: str):
                 "task_type": data["task_type"],
                 "valid": valid,
                 "error_type": error_type,
+                "ast": ast,
                 "n_tools_total": data["n_tools_total"],
                 "n_tools_kept": data["n_tools_kept"],
                 "tool_recall": data["tool_recall"],
                 "pred_parsed": pred_parsed,
             }
         )
+
+    # 回写补算的 ast 字段（若上面有重算）
+    with open(json_path, "w", encoding="utf-8") as f:
+        json.dump(results, f, ensure_ascii=False, indent=2)
 
     # 写 per-row 判分明细
     with open(os.path.join(run_save_dir, "judged.json"), "w", encoding="utf-8") as f:
@@ -407,6 +426,7 @@ def score(run_save_dir: str, json_path: str):
     for (mode, rate), items in by_group.items():
         key = f"{mode}_rate-{rate}"
         score_dict[key] = bfcl_metrics.compute_accuracy(items)
+        score_dict[key]["ast"] = bfcl_metrics.compute_ast_accuracy(items)
         score_dict[key]["mode"] = mode
         score_dict[key]["rate"] = rate
 
@@ -415,11 +435,14 @@ def score(run_save_dir: str, json_path: str):
 
     # CSV: 每行一个 (mode, rate, category) 切片，列结构清晰，Excel 可直接打开
     # UTF-8 with BOM：让 Excel/Numbers 正确识别中文 category 名（如 long_context）
+    # AST 5 口径：exact / superset / subset / top1 / top3
     csv_path = os.path.join(run_save_dir, "score.csv")
     with open(csv_path, "w", newline="", encoding="utf-8-sig") as f:
         writer = csv.writer(f)
         writer.writerow([
-            "mode", "rate", "category", "overall_acc", "num",
+            "mode", "rate", "category", "overall_acc",
+            "exact", "superset", "subset", "top1", "top3",
+            "num",
             "n_tools_avg", "tool_recall_avg", "top_error_type",
         ])
         for key, sd in score_dict.items():
@@ -428,23 +451,34 @@ def score(run_save_dir: str, json_path: str):
             recall_avg = sum(r["tool_recall"] for r in items) / len(items) if items else 0
             # 主行：overall
             top_err = max(sd["error_type_distribution"].items(), key=lambda x: x[1])[0] if sd["error_type_distribution"] else "-"
+            ast_ov = sd["ast"]["overall"]
             writer.writerow([
                 sd["mode"],
                 sd["rate"] if sd["rate"] is not None else "-",
                 "OVERALL",
                 f"{sd['overall_accuracy']:.4f}",
+                f"{ast_ov['exact_match']:.4f}",
+                f"{ast_ov['superset_match']:.4f}",
+                f"{ast_ov['subset_match']:.4f}",
+                f"{ast_ov['top1_match']:.4f}",
+                f"{ast_ov['top3_match']:.4f}",
                 sd["num_samples"],
                 f"{n_avg:.2f}",
                 f"{recall_avg:.4f}",
                 top_err,
             ])
             # 子行：per official_category
-            for cat, cd in sd["by_category"].items():
+            for cat, cd in sd["ast"]["by_category"].items():
                 writer.writerow([
                     sd["mode"],
                     sd["rate"] if sd["rate"] is not None else "-",
                     cat,
-                    f"{cd['accuracy']:.4f}",
+                    "",  # overall_acc 仅 overall 行有意义
+                    f"{cd['exact_match']:.4f}",
+                    f"{cd['superset_match']:.4f}",
+                    f"{cd['subset_match']:.4f}",
+                    f"{cd['top1_match']:.4f}",
+                    f"{cd['top3_match']:.4f}",
                     cd["num"],
                     "",  # n_tools 仅 overall 有意义
                     "",  # tool_recall 仅 overall 有意义
@@ -454,8 +488,12 @@ def score(run_save_dir: str, json_path: str):
     print(f"[score] 写入 {run_save_dir}/score.json 与 score.csv")
     # 打印摘要
     for key, sd in score_dict.items():
+        ast_ov = sd["ast"]["overall"]
         print(
             f"  {key}: overall_acc={sd['overall_accuracy']:.4f} "
+            f"AST[exact={ast_ov['exact_match']:.4f} superset={ast_ov['superset_match']:.4f} "
+            f"subset={ast_ov['subset_match']:.4f} top1={ast_ov['top1_match']:.4f} "
+            f"top3={ast_ov['top3_match']:.4f}] "
             f"({sum(1 for r in by_group[(sd['mode'],sd['rate'])] if r['valid'])}/{sd['num_samples']})"
         )
 
