@@ -335,20 +335,26 @@ async def predict(yaml_args, mode: str, rate, json_path: str, enable_test: bool 
 
             for idx, m in enumerate(meta):
                 pred_text = preds[idx].outputs[0].text
-                # 逐条判分：evaluate_row 拿官方无序并行口径（用于 error_type 错误分布），
-                # compute_ast_metrics 拿 5 种 AST 口径（exact/superset/subset/top1/top3）。
-                # valid 字段改用 AST 的 exact_match（与 evaluate_row 的无序并行口径等价）。
+                # 端到端判分：这里拿到的是 reranker（压缩工具文档）+ LLM 正常生成的完整输出。
+                # 同时跑两套判分，各自用途不同：
+                #   1) evaluate_row —— 官方无序并行口径（|P|须等于|G|且全匹配才算 valid），
+                #      主要用于拿 error_type 做错误类型分布统计（哪类错最多）。
+                #   2) compute_ast_metrics —— 5 种 AST 口径（exact/superset/subset/top1/top3），
+                #      口径更全：exact 即官方口径，superset 不罚多调，subset 不罚少调，
+                #      top1/top3 看至少命中几个。供 score() 汇总 5 维准确率。
+                # valid 字段改用 AST 的 exact_match（与 evaluate_row 的无序并行口径等价），
+                # 这样 compute_accuracy 算的 overall_acc 与 AST 的 exact_acc 保持一致。
                 res = bfcl_metrics.evaluate_row(m["function"], pred_text, m["ground_truth"])
                 ast = bfcl_metrics.compute_ast_metrics(m["function"], pred_text, m["ground_truth"])
                 results[m["id"]] = {
                     "mode": mode,
                     "rate": rate,
                     "pred": pred_text,
-                    "valid": ast["exact_match"],
+                    "valid": ast["exact_match"],   # = 官方无序并行口径（最严格）
                     "error_type": res["error_type"],
                     "error": res["error"],
                     "parsed_calls": res["model_output"],
-                    "ast": ast,
+                    "ast": ast,                    # 5 种口径 + n_matched/n_gt/n_pred
                     **m,
                 }
 
@@ -382,7 +388,7 @@ def score(run_save_dir: str, json_path: str):
             valid = res["valid"]
             error_type = res["error_type"]
             pred_parsed = res["model_output"]
-        # AST 5 口径：优先用 result 里已写的 ast；旧 result 缺则重算
+        # AST 5 口径：优先用 result 里 consumer 已写入的 ast；旧 result 缺则重算并回写
         if "ast" in data:
             ast = data["ast"]
         else:
@@ -391,7 +397,7 @@ def score(run_save_dir: str, json_path: str):
                     f"result.json 中 {rid} 缺 ast 字段又无 function 字段，无法重算 AST。请重新跑 predict 生成完整 result。"
                 )
             ast = bfcl_metrics.compute_ast_metrics(data["function"], data["pred"], data["ground_truth"])
-            results[rid]["ast"] = ast  # 回写，下面统一 dump
+            results[rid]["ast"] = ast  # 回写，下面统一 dump，下次跑可直接复用
         judged.append(
             {
                 "id": rid,
@@ -399,9 +405,9 @@ def score(run_save_dir: str, json_path: str):
                 "rate": data["rate"],
                 "official_category": data["official_category"],
                 "task_type": data["task_type"],
-                "valid": valid,
+                "valid": valid,            # = exact_match（最严格口径，见 consumer 注释）
                 "error_type": error_type,
-                "ast": ast,
+                "ast": ast,                 # 5 种口径 + n_matched/n_gt/n_pred
                 "n_tools_total": data["n_tools_total"],
                 "n_tools_kept": data["n_tools_kept"],
                 "tool_recall": data["tool_recall"],
@@ -409,15 +415,15 @@ def score(run_save_dir: str, json_path: str):
             }
         )
 
-    # 回写补算的 ast 字段（若上面有重算）
+    # 回写补算的 ast 字段到 result.json（若上面有重算），保持 result 与 judged 一致
     with open(json_path, "w", encoding="utf-8") as f:
         json.dump(results, f, ensure_ascii=False, indent=2)
 
-    # 写 per-row 判分明细
+    # 写 per-row 判分明细（含 5 种口径逐条对错，便于定位哪些样本在哪个口径上挂了）
     with open(os.path.join(run_save_dir, "judged.json"), "w", encoding="utf-8") as f:
         json.dump(judged, f, ensure_ascii=False, indent=2)
 
-    # 按 (mode, rate) 分组算 accuracy
+    # 按 (mode, rate) 分组算准确率
     by_group = defaultdict(list)
     for r in judged:
         by_group[(r["mode"], r["rate"])].append(r)
@@ -425,6 +431,8 @@ def score(run_save_dir: str, json_path: str):
     score_dict = {}
     for (mode, rate), items in by_group.items():
         key = f"{mode}_rate-{rate}"
+        # compute_accuracy：单一 overall_acc（基于 valid=exact_match）+ 错误类型分布
+        # compute_ast_accuracy：5 种口径（exact/superset/subset/top1/top3）准确率，维度更全
         score_dict[key] = bfcl_metrics.compute_accuracy(items)
         score_dict[key]["ast"] = bfcl_metrics.compute_ast_accuracy(items)
         score_dict[key]["mode"] = mode
@@ -435,7 +443,16 @@ def score(run_save_dir: str, json_path: str):
 
     # CSV: 每行一个 (mode, rate, category) 切片，列结构清晰，Excel 可直接打开
     # UTF-8 with BOM：让 Excel/Numbers 正确识别中文 category 名（如 long_context）
-    # AST 5 口径：exact / superset / subset / top1 / top3
+    # 列说明：
+    #   overall_acc  = exact_match 准确率（最严格，与 valid 一致）
+    #   exact        = exact_match   准确率（P=G，完全一致，不多不少）
+    #   superset     = superset_match 准确率（G⊆P，GT 全命中，不罚多调）
+    #   subset       = subset_match  准确率（P⊆G，输出全对，不罚少调）
+    #   top1         = top1_match    准确率（至少命中 1 个 GT 调用）
+    #   top3         = top3_match    准确率（至少命中 min(3,|G|) 个 GT 调用）
+    #   n_tools_avg  = 平均保留工具数（压缩效果）
+    #   tool_recall_avg = reranker 工具召回率平均（GT 工具被保留的比例，压缩前后对比）
+    #   top_error_type = 数量最多的错误类型（错误分布诊断）
     csv_path = os.path.join(run_save_dir, "score.csv")
     with open(csv_path, "w", newline="", encoding="utf-8-sig") as f:
         writer = csv.writer(f)
@@ -449,7 +466,7 @@ def score(run_save_dir: str, json_path: str):
             items = by_group[(sd["mode"], sd["rate"])]
             n_avg = sum(r["n_tools_kept"] for r in items) / len(items) if items else 0
             recall_avg = sum(r["tool_recall"] for r in items) / len(items) if items else 0
-            # 主行：overall
+            # 主行：overall（全样本的 5 种口径 + overall_acc + 错误分布）
             top_err = max(sd["error_type_distribution"].items(), key=lambda x: x[1])[0] if sd["error_type_distribution"] else "-"
             ast_ov = sd["ast"]["overall"]
             writer.writerow([
@@ -467,7 +484,7 @@ def score(run_save_dir: str, json_path: str):
                 f"{recall_avg:.4f}",
                 top_err,
             ])
-            # 子行：per official_category
+            # 子行：per official_category（5 种口径的类内准确率）
             for cat, cd in sd["ast"]["by_category"].items():
                 writer.writerow([
                     sd["mode"],
@@ -486,7 +503,9 @@ def score(run_save_dir: str, json_path: str):
                 ])
 
     print(f"[score] 写入 {run_save_dir}/score.json 与 score.csv")
-    # 打印摘要
+    # 打印摘要：overall_acc（=exact_match，最严格）+ AST 5 口径 + 通过数/总数
+    # 通过观察 superset vs subset 的差异可判断模型偏「多调」（superset 低→多调无关）还是
+    # 偏「少调」（subset 低→漏调）；top1/top3 反映最低命中门槛下的通过率。
     for key, sd in score_dict.items():
         ast_ov = sd["ast"]["overall"]
         print(
