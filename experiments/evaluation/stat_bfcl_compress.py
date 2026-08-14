@@ -217,7 +217,8 @@ def _per_sample_table_compress(rows, comp_rec, base_prefill_by_id):
 def _per_sample_rows(mode, rows, rec, rate, base_prefill_by_id=None, orig_tokens_by_id=None):
     """构造 per-sample 明细行列表。
 
-    mode=baseline: 每样本一行，rate=baseline，压缩率=1，加速比=1，reranker=0。
+    mode=baseline: 每样本一行，只保留 baseline 本身指标（tools 个数/token/精度/prefill 耗时），
+                  压缩相关列（压缩后 token、压缩率、加速比、reranker 耗时、压缩后 prefill）留空。
     mode=compress_func: 每样本一行（单 rate），压缩率<1，加速比基于 baseline prefill。
       orig_tokens_by_id: {id: 原始 prompt token}（compress 模式由 baseline 结果或重算提供）
       base_prefill_by_id: {id: baseline prefill_s}（compress 模式算加速比用）
@@ -229,82 +230,98 @@ def _per_sample_rows(mode, rows, rec, rate, base_prefill_by_id=None, orig_tokens
         if r is None:
             continue
 
-        if mode == "baseline":
-            n_total = r["n_tools_total"]
-            orig_tok = r["prompt_tokens"]
-            comp_tok = r["prompt_tokens"]
-            token_cr = 1.0
-            tools_cr = 1.0
-            tools_tok_cr = 1.0
-            reranker_s = 0.0
-            prefill_comp = r["prefill_s"]
-            prefill_base = r["prefill_s"]
-            speedup = 1.0
-            rate_val = BASELINE_TAG
-        else:  # compress_func
-            n_total = r["n_tools_total"]
-            orig_tok = orig_tokens_by_id.get(sid, r["prompt_tokens"]) if orig_tokens_by_id else r["prompt_tokens"]
-            comp_tok = r["prompt_tokens"]
-            token_cr = (comp_tok / orig_tok) if orig_tok else 0.0
-            tools_cr = (r["n_tools_kept"] / n_total) if n_total else 0.0
-            reranker_s = r["reranker_s"]
-            prefill_comp = r["prefill_s"]
-            prefill_base = base_prefill_by_id.get(sid) if base_prefill_by_id else None
-            e2e = reranker_s + prefill_comp
-            speedup = (prefill_base / e2e) if (prefill_base and e2e) else 0.0
-            rate_val = rate
-        # tools token：baseline 下原始=压缩（不压缩）；compress 下原始取自 records，压缩取自 records
+        # baseline 与 compress 共有的指标
+        n_total = r["n_tools_total"]
         tools_tok_total = r["tools_tokens_total"]
-        tools_tok_comp = r["tools_tokens_compressed"]
-        if mode == "baseline":
-            tools_tok_cr = 1.0
-        else:
-            tools_tok_cr = (tools_tok_comp / tools_tok_total) if tools_tok_total else 0.0
-        # tools token 占总 prompt token 的比例（原始 / 压缩后）
-        tools_ratio_total = (tools_tok_total / orig_tok) if orig_tok else 0.0
-        tools_ratio_comp = (tools_tok_comp / comp_tok) if comp_tok else 0.0
-
+        orig_tok = r["prompt_tokens"]  # baseline 下即原始 prompt token；compress 下为压缩后，需覆盖
         row = {
             "id": sid,
             "official_category": r["official_category"],
             "task_type": r["task_type"],
-            "rate": rate_val,
+            "rate": BASELINE_TAG if mode == "baseline" else rate,
             "n_tools_total": n_total,
             "n_tools_kept": r["n_tools_kept"],
             "n_gt_funcs": r["n_gt_funcs"],
             "tools_tokens_total": tools_tok_total,
-            "tools_tokens_compressed": tools_tok_comp,
-            "tools_token_compress_ratio": f"{tools_tok_cr:.4f}",
-            "tools_ratio_in_prompt_total": f"{tools_ratio_total:.4f}",
-            "tools_ratio_in_prompt_compressed": f"{tools_ratio_comp:.4f}",
-            "prompt_tokens_total": orig_tok,
-            "prompt_tokens_compressed": comp_tok,
-            "token_compress_ratio": f"{token_cr:.4f}",
-            "tools_compress_ratio": f"{tools_cr:.4f}",
+            "tools_tokens_compressed": "",
+            "tools_token_compress_ratio": "",
+            "tools_ratio_in_prompt_total": "",
+            "tools_ratio_in_prompt_compressed": "",
+            "prompt_tokens_total": "",
+            "prompt_tokens_compressed": "",
+            "token_compress_ratio": "",
+            "tools_compress_ratio": "",
             "exact_match": r["exact_match"],
             "superset_match": r["superset_match"],
             "subset_match": r["subset_match"],
             "top1_match": r["top1_match"],
             "top3_match": r["top3_match"],
-            "reranker_s": f"{reranker_s:.4f}",
-            "prefill_s_compressed": f"{prefill_comp:.4f}",
-            "prefill_s_baseline": f"{prefill_base:.4f}" if prefill_base is not None else "",
-            "speedup_prefill": f"{speedup:.4f}" if prefill_base is not None else "",
+            "reranker_s": "",
+            "prefill_s_compressed": "",
+            "prefill_s_baseline": f"{r['prefill_s']:.4f}",
+            "speedup_prefill": "",
         }
+
+        if mode == "baseline":
+            # baseline：补原始 prompt token + tools 占比（baseline 视角下的占比，不涉及压缩）
+            row["prompt_tokens_total"] = orig_tok
+            row["tools_ratio_in_prompt_total"] = (
+                f"{tools_tok_total / orig_tok:.4f}" if orig_tok else ""
+            )
+            # baseline 的 prefill 即 baseline prefill，复填进 compressed 列做完整记录
+            row["prefill_s_compressed"] = f"{r['prefill_s']:.4f}"
+        else:  # compress_func
+            # 原始 prompt token 取自补测的 baseline（未压缩）；压缩后取自 records
+            if orig_tokens_by_id:
+                orig_tok = orig_tokens_by_id.get(sid, r["prompt_tokens"])
+            comp_tok = r["prompt_tokens"]
+            tools_tok_comp = r["tools_tokens_compressed"]
+            token_cr = (comp_tok / orig_tok) if orig_tok else 0.0
+            tools_cr = (r["n_tools_kept"] / n_total) if n_total else 0.0
+            tools_tok_cr = (tools_tok_comp / tools_tok_total) if tools_tok_total else 0.0
+            reranker_s = r["reranker_s"]
+            prefill_comp = r["prefill_s"]
+            prefill_base = base_prefill_by_id.get(sid) if base_prefill_by_id else None
+            e2e = reranker_s + prefill_comp
+            speedup = (prefill_base / e2e) if (prefill_base and e2e) else 0.0
+
+            row["tools_tokens_compressed"] = tools_tok_comp
+            row["tools_token_compress_ratio"] = f"{tools_tok_cr:.4f}"
+            row["tools_ratio_in_prompt_total"] = (
+                f"{tools_tok_total / orig_tok:.4f}" if orig_tok else ""
+            )
+            row["tools_ratio_in_prompt_compressed"] = (
+                f"{tools_tok_comp / comp_tok:.4f}" if comp_tok else ""
+            )
+            row["prompt_tokens_total"] = orig_tok
+            row["prompt_tokens_compressed"] = comp_tok
+            row["token_compress_ratio"] = f"{token_cr:.4f}"
+            row["tools_compress_ratio"] = f"{tools_cr:.4f}"
+            row["reranker_s"] = f"{reranker_s:.4f}"
+            row["prefill_s_compressed"] = f"{prefill_comp:.4f}"
+            row["prefill_s_baseline"] = f"{prefill_base:.4f}" if prefill_base is not None else ""
+            row["speedup_prefill"] = f"{speedup:.4f}" if prefill_base is not None else ""
         out.append(row)
     return out
 
 
 def _agg(records):
-    """对一组 per-sample 记录算均值/最大/最小。"""
+    """对一组 per-sample 记录算均值/最大/最小。
+
+    baseline 模式下压缩相关列为空字符串，stats() 跳过这些字段（返回 None 值），
+    _flatten_agg 会把 None 值写为空，CSV 即显示空白。
+    """
     if not records:
         return None
     n = len(records)
 
     def stats(field, fmt="{:.4f}"):
-        vals = [float(r[field]) for r in records]
+        # 跳过空值字段（baseline 下压缩列留空，不参与统计）
+        vals = [float(r[field]) for r in records if r.get(field) not in ("", None)]
+        if not vals:
+            return {f"{field}_mean": "", f"{field}_max": "", f"{field}_min": ""}
         return {
-            f"{field}_mean": fmt.format(sum(vals) / n),
+            f"{field}_mean": fmt.format(sum(vals) / len(vals)),
             f"{field}_max": fmt.format(max(vals)),
             f"{field}_min": fmt.format(min(vals)),
         }
