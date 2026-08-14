@@ -502,9 +502,10 @@ def _measure_baseline_prefill(rows, tokenizer, llm, max_total_token, max_gen, wa
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("-c", "--config", required=True)
-    ap.add_argument("--mode", default="compress_func",
+    ap.add_argument("--mode", default=None,
                     choices=["baseline", "compress_func"],
-                    help="baseline=不压缩；compress_func=reranker 压缩（输出不含 baseline 行）")
+                    help="baseline=不压缩；compress_func=reranker 压缩（输出不含 baseline 行）。"
+                         "留空则读 config 的 exp_config.modes：列表取首个元素，标量直接用")
     ap.add_argument("--debug", action="store_true", help="只用前 20 条")
     ap.add_argument("-n", "--n", type=int, default=0, help="总样本数（含 warmup，0=全部）")
     ap.add_argument("--warmup", type=int, default=2, help="前 N 条 warmup 不计入统计")
@@ -516,6 +517,19 @@ def main():
         cfg = yaml.safe_load(f)
     if not cfg.get("dataset_dir"):
         cfg["dataset_dir"] = os.path.join(os.path.dirname(__file__), "..", "data")
+
+    # mode 解析优先级：命令行 --mode > config 的 exp_config.modes
+    # config 里 modes 是列表（原 eval 脚本设计：循环跑多种模式），取首个；
+    # 也支持写成标量字符串。统计脚本一次只跑一个 mode。
+    if args.mode is None:
+        modes_cfg = cfg.get("exp_config", {}).get("modes")
+        if isinstance(modes_cfg, list):
+            args.mode = modes_cfg[0] if modes_cfg else "compress_func"
+        elif isinstance(modes_cfg, str):
+            args.mode = modes_cfg
+        else:
+            args.mode = "compress_func"
+        print(f"[info] 未指定 --mode，从 config exp_config.modes 读取: {args.mode}")
 
     rows = load_bfcl_eval(cfg.get("dataset_dir"))
     if args.n > 0:
@@ -622,19 +636,45 @@ def main():
     print("=" * 60)
 
     print(f"\n【总体统计·均值】 mode={args.mode}")
-    print(f"{'rate':>10} {'num':>4} {'tools_kpt':>9} {'gt':>5} {'tools_tok':>9} "
-          f"{'tok_comp':>8} {'exact':>6} {'super':>6} {'subset':>6} {'top1':>6} {'top3':>6} {'speedup':>8}")
-    for rate in all_rates:
-        items = [r for r in per_sample if r["rate"] == rate]
-        if not items:
-            continue
-        n = len(items)
-        avg = lambda k: sum(float(r[k]) for r in items) / n
-        sp = f"{avg('speedup_prefill'):.4f}" if items[0].get("speedup_prefill") not in ("", None) else "-"
-        print(f"{str(rate):>10} {n:>4} {avg('n_tools_kept'):>9.2f} {avg('n_gt_funcs'):>5.2f} "
-              f"{avg('tools_tokens_compressed'):>9.0f} {avg('token_compress_ratio'):>8.4f} "
-              f"{avg('exact_match'):>6.3f} {avg('superset_match'):>6.3f} {avg('subset_match'):>6.3f} "
-              f"{avg('top1_match'):>6.3f} {avg('top3_match'):>6.3f} {sp:>8}")
+    # 空（baseline 模式下压缩列留空）→ 显示 "-"，不参与平均
+    def _mean(items, k):
+        vals = [float(r[k]) for r in items if r.get(k) not in ("", None)]
+        return sum(vals) / len(vals) if vals else None
+    def _fmt(v, spec):
+        return "-" if v is None else format(v, spec)
+
+    # baseline 模式只打印 baseline 相关列；compress 打印压缩列
+    if args.mode == "baseline":
+        print(f"{'rate':>10} {'num':>4} {'tools_kpt':>9} {'gt':>5} {'tools_tok':>9} "
+              f"{'prompt_tok':>10} {'exact':>6} {'super':>6} {'subset':>6} {'top1':>6} {'top3':>6}")
+        for rate in all_rates:
+            items = [r for r in per_sample if r["rate"] == rate]
+            if not items:
+                continue
+            n = len(items)
+            print(f"{str(rate):>10} {n:>4} {_fmt(_mean(items,'n_tools_kept'),'.2f'):>9} "
+                  f"{_fmt(_mean(items,'n_gt_funcs'),'.2f'):>5} "
+                  f"{_fmt(_mean(items,'tools_tokens_total'),'.0f'):>9} "
+                  f"{_fmt(_mean(items,'prompt_tokens_total'),'.0f'):>10} "
+                  f"{_fmt(_mean(items,'exact_match'),'.3f'):>6} {_fmt(_mean(items,'superset_match'),'.3f'):>6} "
+                  f"{_fmt(_mean(items,'subset_match'),'.3f'):>6} {_fmt(_mean(items,'top1_match'),'.3f'):>6} "
+                  f"{_fmt(_mean(items,'top3_match'),'.3f'):>6}")
+    else:
+        print(f"{'rate':>10} {'num':>4} {'tools_kpt':>9} {'gt':>5} {'tools_tok':>9} "
+              f"{'tok_comp':>8} {'exact':>6} {'super':>6} {'subset':>6} {'top1':>6} {'top3':>6} {'speedup':>8}")
+        for rate in all_rates:
+            items = [r for r in per_sample if r["rate"] == rate]
+            if not items:
+                continue
+            n = len(items)
+            print(f"{str(rate):>10} {n:>4} {_fmt(_mean(items,'n_tools_kept'),'.2f'):>9} "
+                  f"{_fmt(_mean(items,'n_gt_funcs'),'.2f'):>5} "
+                  f"{_fmt(_mean(items,'tools_tokens_compressed'),'.0f'):>9} "
+                  f"{_fmt(_mean(items,'token_compress_ratio'),'.4f'):>8} "
+                  f"{_fmt(_mean(items,'exact_match'),'.3f'):>6} {_fmt(_mean(items,'superset_match'),'.3f'):>6} "
+                  f"{_fmt(_mean(items,'subset_match'),'.3f'):>6} {_fmt(_mean(items,'top1_match'),'.3f'):>6} "
+                  f"{_fmt(_mean(items,'top3_match'),'.3f'):>6} "
+                  f"{_fmt(_mean(items,'speedup_prefill'),'.4f'):>8}")
 
 
 if __name__ == "__main__":
