@@ -1,22 +1,33 @@
-"""统计 BFCL V4 Parallel Multi-Turn 各样本的压缩效果与加速比，并按 official_category / task_type 分类统计。
+"""统计 BFCL V4 Parallel Multi-Turn 各样本的压缩效果、加速比与函数调用精度，并按 official_category / task_type 分类统计。
 
-输出指标（每条样本）：
-  - tools 个数（原始）
-  - 真值 tools 个数（ground_truth）
-  - 原始 prompt 总 token 数（chat template 渲染整条 prompt：system+tools+user）
-  - 压缩后 prompt 总 token 数
+baseline 与 compress 分开执行（--mode 选择）：
+  - baseline：不压缩，跑完整生成 + 判分，输出 baseline 统计（精度 + 压缩率=1 + 加速比=1）
+  - compress_func：reranker 压缩，跑完整生成 + 判分，输出 compress 统计（精度 + 压缩率 + 加速比）
+    compress 的输出不含 baseline 行；加速比所需 baseline prefill 由 compress 模式内部补测一次
+    （max_tokens=1，仅计时，不写进输出表）。
+
+每条样本输出指标：
+  - tools 个数（原始）/ 真值 tools 个数（ground_truth）
+  - 原始 prompt 总 token / 压缩后 prompt 总 token（chat template 渲染整条 prompt）
   - 实际 token 压缩率 = 压缩后 prompt token / 原始 prompt token
   - tools 个数压缩率 = 保留 tools 数 / 原始 tools 数
   - prefill 加速比 = baseline_prefill_s / (reranker_s + 压缩后 prefill_s)
-    （口径与 benchmark_bfcl.py 一致：只统计 prefill，压缩端到端 = reranker 耗时 + 压缩后 prefill 耗时）
+    （口径同 benchmark_bfcl.py：只统计 prefill，压缩端到端 = reranker + 压缩后 prefill）
+  - 函数调用精度 5 口径：exact / superset / subset / top1 / top3（0/1，调 bfcl_metrics 判分）
 
 分类统计（均值 / 最大值 / 最小值）：
   1. 先按 official_category 分类
   2. 再在每个 official_category 下按 task_type 分类（category × task_type 子类）
 
 用法:
-  python stat_bfcl_compress.py -c ../config/bfcl_parallel_multi_turn.yaml [--debug] [--n N] [--warmup W]
-  python stat_bfcl_compress.py -c ../config/bfcl_parallel_multi_turn.yaml --rates 10,8,6 --output ../output
+  # baseline（单独跑，输出 baseline 统计）
+  python stat_bfcl_compress.py -c ../config/bfcl_parallel_multi_turn.yaml --mode baseline
+
+  # compress（单独跑，输出 compress 统计，不含 baseline 行）
+  python stat_bfcl_compress.py -c ../config/bfcl_parallel_multi_turn.yaml --mode compress_func
+
+  # 调试（前 20 条）
+  python stat_bfcl_compress.py -c ../config/bfcl_parallel_multi_turn.yaml --mode compress_func --debug
 """
 
 import argparse
@@ -44,28 +55,45 @@ from eval_bfcl_parallel_multi_turn import (  # noqa: E402
     build_components,
     load_bfcl_eval,
 )
+import bfcl_metrics  # noqa: E402
 
-# baseline 在 rate 列里的标记（字符串，便于和数值 rate 区分；baseline 行始终排在所有压缩档位之前）
+# baseline 在 rate 列里的标记
 BASELINE_TAG = "baseline"
+
+# 5 种 AST 精度口径
+AST_FIELDS = ["exact_match", "superset_match", "subset_match", "top1_match", "top3_match"]
 
 
 def _gt_func_names(sample):
-    """从 ground_truth 取出真值工具名集合。ground_truth 结构: [{func_name: {params...}}, ...]。"""
+    """从 ground_truth 取真值工具名集合。ground_truth: [{func_name: {params...}}, ...]。"""
     gt = sample.get("ground_truth") or []
     return {list(it.keys())[0] for it in gt if it}
+
+
+def _judge(func_list, pred_text, ground_truth):
+    """调 bfcl_metrics 判分，返回 5 口径 dict（值已转 0/1 int，便于聚合）。"""
+    ast = bfcl_metrics.compute_ast_metrics(func_list, pred_text, ground_truth)
+    return {f: int(bool(ast[f])) for f in AST_FIELDS}
 
 
 def _run_batch(yaml_args, mode, rate, rows, tokenizer, ranker, llm,
                max_total_token, max_gen, instruction, warmup=0):
     """跑一个 mode（baseline / compress_func）。
 
+    对每个 batch 做两次 generate：
+      1) prefill_sp(max_tokens=1)：测纯 prefill 时间（与 benchmark_bfcl.py 同口径）
+      2) gen_sp(max_tokens=max_gen)：拿模型输出文本 → 调 bfcl_metrics 判分拿 5 口径精度
+
     返回 per-sample 记录 dict，key = sample id。
-    baseline: 不压缩，记录原始 prompt token + baseline prefill 耗时。
-    compress_func: reranker 压缩，记录压缩后 prompt token + reranker 耗时 + 压缩后 prefill 耗时。
-    warmup: 前 warmup 条样本照常跑（预热），但不计入返回结果。
+      baseline: n_tools_kept=n_tools_total, 压缩率=1, reranker_s=0, speedup=1
+      compress_func: 记录压缩后 token + reranker 耗时 + 压缩后 prefill + 精度
     """
-    # 测纯 prefill：max_tokens=1，decode 几乎为 0，wall-clock ≈ prefill（与 benchmark_bfcl.py 同口径）
     prefill_sp = SamplingParams(temperature=0.0, max_tokens=1, top_p=1.0)
+    gen_sp = SamplingParams(
+        temperature=yaml_args["llm_config"]["sampling"].get("temperature", 0.0),
+        max_tokens=max_gen,
+        top_p=yaml_args["llm_config"]["sampling"].get("top_p", 1.0),
+    )
 
     records = {}
     batch_size = yaml_args["exp_config"].get("batch_size", 8)
@@ -73,8 +101,8 @@ def _run_batch(yaml_args, mode, rate, rows, tokenizer, ranker, llm,
 
     for i in tqdm(range(0, len(rows), batch_size), desc=f"[{mode} rate={rate}]"):
         batch = rows[i: i + batch_size]
-        prompts = []
         metas = []
+        prompts = []
 
         # ---- producer：压缩 + 拼 prompt，per-sample 计 reranker 时间 ----
         for sample in batch:
@@ -84,7 +112,7 @@ def _run_batch(yaml_args, mode, rate, rows, tokenizer, ranker, llm,
 
             if mode == "compress_func" and ranker is not None:
                 t0 = time.perf_counter()
-                kept_funcs, kept_names = _compress_tools(
+                kept_funcs, _ = _compress_tools(
                     ranker, func_list, query, rate, instruction, sample["id"], ""
                 )
                 reranker_s = time.perf_counter() - t0
@@ -102,9 +130,8 @@ def _run_batch(yaml_args, mode, rate, rows, tokenizer, ranker, llm,
             prompts.append(prompt)
             metas.append({
                 "global_idx": global_idx,
-                "id": sample["id"],
-                "official_category": sample["official_category"],
-                "task_type": sample["task_type"],
+                "sample": sample,
+                "kept_funcs": kept_funcs,
                 "n_tools_total": len(func_list),
                 "n_tools_kept": len(kept_funcs),
                 "n_gt_funcs": len(gt_funcs),
@@ -114,19 +141,27 @@ def _run_batch(yaml_args, mode, rate, rows, tokenizer, ranker, llm,
             })
             global_idx += 1
 
-        # ---- consumer：llm.generate（max_tokens=1，时间 ≈ prefill）----
+        # ---- consumer 1：prefill 计时（max_tokens=1，纯 prefill）----
         t0 = time.perf_counter()
         with torch.cuda.device("cuda:0"):
             llm.generate(prompts, prefill_sp)
         prefill_s_per = (time.perf_counter() - t0) / len(batch)
 
+        # ---- consumer 2：完整生成（max_tokens=max_gen），拿 pred 文本判分 ----
+        with torch.cuda.device("cuda:0"):
+            outs = llm.generate(prompts, gen_sp)
+        preds = [o.outputs[0].text for o in outs]
+
         for j, m in enumerate(metas):
             if m["global_idx"] < warmup:
                 continue  # warmup 不计入统计
-            records[m["id"]] = {
-                "id": m["id"],
-                "official_category": m["official_category"],
-                "task_type": m["task_type"],
+            sid = m["sample"]["id"]
+            # 精度判分（用模型实际可见的工具列表 + ground_truth）
+            ast = _judge(m["kept_funcs"], preds[j], m["sample"]["ground_truth"])
+            records[sid] = {
+                "id": sid,
+                "official_category": m["sample"]["official_category"],
+                "task_type": m["sample"]["task_type"],
                 "n_tools_total": m["n_tools_total"],
                 "n_tools_kept": m["n_tools_kept"],
                 "n_gt_funcs": m["n_gt_funcs"],
@@ -134,77 +169,99 @@ def _run_batch(yaml_args, mode, rate, rows, tokenizer, ranker, llm,
                 "reranker_s": m["reranker_s"],
                 "build_s": m["build_s"],
                 "prefill_s": prefill_s_per,
+                "pred": preds[j],
+                **ast,
             }
     return records
 
 
-def _build_per_sample_table(rows, base_rec, comp_rec_by_rate):
-    """构造 per-sample 明细表：每条样本 × 每个 rate 一行，外加每条样本一行 baseline。
+def _per_sample_table_compress(rows, comp_rec, base_prefill_by_id):
+    """compress 模式的 per-sample 明细：每条样本 × 每个 rate 一行（不含 baseline 行）。
 
-    压缩率 / 加速比都基于同一样本的 baseline 与压缩结果配对计算。
-    baseline 行作为对照基准：压缩率=1.0、加速比=1.0、reranker 耗时=0、
-    压缩后 token=原始 token、压缩后 prefill=baseline prefill。
+    压缩率 / 加速比基于同一样本的原始数据与压缩结果配对计算。
+    base_prefill_by_id: {id: baseline_prefill_s}，用于算加速比。
     """
     out = []
     for sample in rows:
         sid = sample["id"]
-        b = base_rec.get(sid)
-        if b is None:
-            continue  # warmup 跳过的样本无 baseline
+        c = comp_rec.get(sid)
+        if c is None:
+            continue
+        b_prefill = base_prefill_by_id.get(sid)
+        # 原始 prompt token：compress 模式下未直接记录，用样本重算
+        # 注：compress 模式 records 里 prompt_tokens 是压缩后的；原始需另算
+        # 这里原始 prompt token 取自 c 里未存，改由调用方补——见 _per_sample_table_compress_v2
+        out.append((sid, c, b_prefill))
+    return out
 
-        # baseline 行（对照基准）
-        out.append({
+
+def _per_sample_rows(mode, rows, rec, rate, base_prefill_by_id=None, orig_tokens_by_id=None):
+    """构造 per-sample 明细行列表。
+
+    mode=baseline: 每样本一行，rate=baseline，压缩率=1，加速比=1，reranker=0。
+    mode=compress_func: 每样本一行（单 rate），压缩率<1，加速比基于 baseline prefill。
+      orig_tokens_by_id: {id: 原始 prompt token}（compress 模式由 baseline 结果或重算提供）
+      base_prefill_by_id: {id: baseline prefill_s}（compress 模式算加速比用）
+    """
+    out = []
+    for sample in rows:
+        sid = sample["id"]
+        r = rec.get(sid)
+        if r is None:
+            continue
+
+        if mode == "baseline":
+            n_total = r["n_tools_total"]
+            orig_tok = r["prompt_tokens"]
+            comp_tok = r["prompt_tokens"]
+            token_cr = 1.0
+            tools_cr = 1.0
+            reranker_s = 0.0
+            prefill_comp = r["prefill_s"]
+            prefill_base = r["prefill_s"]
+            speedup = 1.0
+            rate_val = BASELINE_TAG
+        else:  # compress_func
+            n_total = r["n_tools_total"]
+            orig_tok = orig_tokens_by_id.get(sid, r["prompt_tokens"]) if orig_tokens_by_id else r["prompt_tokens"]
+            comp_tok = r["prompt_tokens"]
+            token_cr = (comp_tok / orig_tok) if orig_tok else 0.0
+            tools_cr = (r["n_tools_kept"] / n_total) if n_total else 0.0
+            reranker_s = r["reranker_s"]
+            prefill_comp = r["prefill_s"]
+            prefill_base = base_prefill_by_id.get(sid) if base_prefill_by_id else None
+            e2e = reranker_s + prefill_comp
+            speedup = (prefill_base / e2e) if (prefill_base and e2e) else 0.0
+            rate_val = rate
+
+        row = {
             "id": sid,
-            "official_category": b["official_category"],
-            "task_type": b["task_type"],
-            "rate": BASELINE_TAG,
-            "n_tools_total": b["n_tools_total"],
-            "n_tools_kept": b["n_tools_total"],          # baseline 不压缩，保留全部
-            "n_gt_funcs": b["n_gt_funcs"],
-            "prompt_tokens_total": b["prompt_tokens"],      # 原始 prompt 总 token
-            "prompt_tokens_compressed": b["prompt_tokens"],  # baseline = 原始
-            "token_compress_ratio": "1.0000",                # baseline 压缩率 = 1
-            "tools_compress_ratio": "1.0000",                # baseline tools 压缩率 = 1
-            "reranker_s": "0.0000",                          # baseline 无 reranker
-            "prefill_s_compressed": f"{b['prefill_s']:.4f}",  # baseline prefill
-            "prefill_s_baseline": f"{b['prefill_s']:.4f}",
-            "speedup_prefill": "1.0000",                    # baseline 加速比 = 1
-        })
-
-        # 各压缩 rate 行
-        for rate, comp_map in comp_rec_by_rate.items():
-            c = comp_map.get(sid)
-            if c is None:
-                continue
-            # token 压缩率 = 压缩后 prompt token / 原始 prompt token
-            token_cr = (c["prompt_tokens"] / b["prompt_tokens"]) if b["prompt_tokens"] else 0.0
-            # tools 个数压缩率 = 保留 tools 数 / 原始 tools 数
-            tools_cr = (c["n_tools_kept"] / b["n_tools_total"]) if b["n_tools_total"] else 0.0
-            # prefill 加速比 = baseline_prefill / (reranker + 压缩后 prefill)
-            e2e = c["reranker_s"] + c["prefill_s"]
-            speedup = (b["prefill_s"] / e2e) if e2e else 0.0
-            out.append({
-                "id": sid,
-                "official_category": b["official_category"],
-                "task_type": b["task_type"],
-                "rate": rate,
-                "n_tools_total": b["n_tools_total"],
-                "n_tools_kept": c["n_tools_kept"],
-                "n_gt_funcs": b["n_gt_funcs"],
-                "prompt_tokens_total": b["prompt_tokens"],      # 原始 prompt 总 token
-                "prompt_tokens_compressed": c["prompt_tokens"],  # 压缩后 prompt token
-                "token_compress_ratio": f"{token_cr:.4f}",       # token 压缩率
-                "tools_compress_ratio": f"{tools_cr:.4f}",        # tools 个数压缩率
-                "reranker_s": f"{c['reranker_s']:.4f}",
-                "prefill_s_compressed": f"{c['prefill_s']:.4f}",
-                "prefill_s_baseline": f"{b['prefill_s']:.4f}",
-                "speedup_prefill": f"{speedup:.4f}",             # prefill 加速比
-            })
+            "official_category": r["official_category"],
+            "task_type": r["task_type"],
+            "rate": rate_val,
+            "n_tools_total": n_total,
+            "n_tools_kept": r["n_tools_kept"],
+            "n_gt_funcs": r["n_gt_funcs"],
+            "prompt_tokens_total": orig_tok,
+            "prompt_tokens_compressed": comp_tok,
+            "token_compress_ratio": f"{token_cr:.4f}",
+            "tools_compress_ratio": f"{tools_cr:.4f}",
+            "exact_match": r["exact_match"],
+            "superset_match": r["superset_match"],
+            "subset_match": r["subset_match"],
+            "top1_match": r["top1_match"],
+            "top3_match": r["top3_match"],
+            "reranker_s": f"{reranker_s:.4f}",
+            "prefill_s_compressed": f"{prefill_comp:.4f}",
+            "prefill_s_baseline": f"{prefill_base:.4f}" if prefill_base is not None else "",
+            "speedup_prefill": f"{speedup:.4f}" if prefill_base is not None else "",
+        }
+        out.append(row)
     return out
 
 
 def _agg(records):
-    """对一组 per-sample 记录算均值/最大/最小。返回 dict（值已四舍五入为字符串，便于直写 CSV）。"""
+    """对一组 per-sample 记录算均值/最大/最小。"""
     if not records:
         return None
     n = len(records)
@@ -225,6 +282,8 @@ def _agg(records):
     out["prompt_tokens_compressed"] = stats("prompt_tokens_compressed", "{:.1f}")
     out["token_compress_ratio"] = stats("token_compress_ratio")
     out["tools_compress_ratio"] = stats("tools_compress_ratio")
+    for f in AST_FIELDS:
+        out[f] = stats(f)  # 精度均值 = 准确率
     out["speedup_prefill"] = stats("speedup_prefill")
     out["reranker_s"] = stats("reranker_s")
     out["prefill_s_compressed"] = stats("prefill_s_compressed")
@@ -232,11 +291,10 @@ def _agg(records):
     return out
 
 
-def _flatten_agg(agg, prefix=""):
-    """把 _agg 返回的嵌套 dict 摊平为 {列名: 值}，便于写 CSV 一行。
+def _flatten_agg(agg):
+    """把 _agg 返回的嵌套 dict 摊平为 {列名: 值}。
 
-    注意：stats() 返回的 key 已带字段名前缀（如 n_tools_total_mean），
-    这里直接用 sk 即可，不要再拼 key（否则变 n_tools_total_n_tools_total_mean 双重前缀）。
+    stats() 返回的 key 已带字段名前缀，这里直接用 sk，不再拼 key（避免双重前缀）。
     """
     if agg is None:
         return {}
@@ -245,11 +303,11 @@ def _flatten_agg(agg, prefix=""):
         if key == "num" or not isinstance(sub, dict):
             continue
         for sk, sv in sub.items():
-            flat[f"{prefix}{sk}"] = sv
+            flat[sk] = sv
     return flat
 
 
-# 分类统计的列顺序（统一表头）
+# 分类统计的列顺序（统一表头，含精度 5 口径）
 CATEGORY_COLS = [
     "num",
     "n_tools_total_mean", "n_tools_total_max", "n_tools_total_min",
@@ -259,6 +317,11 @@ CATEGORY_COLS = [
     "prompt_tokens_compressed_mean", "prompt_tokens_compressed_max", "prompt_tokens_compressed_min",
     "token_compress_ratio_mean", "token_compress_ratio_max", "token_compress_ratio_min",
     "tools_compress_ratio_mean", "tools_compress_ratio_max", "tools_compress_ratio_min",
+    "exact_match_mean", "exact_match_max", "exact_match_min",
+    "superset_match_mean", "superset_match_max", "superset_match_min",
+    "subset_match_mean", "subset_match_max", "subset_match_min",
+    "top1_match_mean", "top1_match_max", "top1_match_min",
+    "top3_match_mean", "top3_match_max", "top3_match_min",
     "speedup_prefill_mean", "speedup_prefill_max", "speedup_prefill_min",
     "reranker_s_mean", "reranker_s_max", "reranker_s_min",
     "prefill_s_compressed_mean", "prefill_s_compressed_max", "prefill_s_compressed_min",
@@ -270,6 +333,7 @@ PER_SAMPLE_COLS = [
     "n_tools_total", "n_tools_kept", "n_gt_funcs",
     "prompt_tokens_total", "prompt_tokens_compressed",
     "token_compress_ratio", "tools_compress_ratio",
+    "exact_match", "superset_match", "subset_match", "top1_match", "top3_match",
     "reranker_s", "prefill_s_compressed", "prefill_s_baseline", "speedup_prefill",
 ]
 
@@ -285,10 +349,7 @@ def _write_csv(path, rows, cols):
 
 
 def _all_rates_sorted(per_sample):
-    """从 per_sample 里动态发现所有 rate（含 baseline），排序返回。
-
-    baseline 始终排最前，其余按数值升序。rate 可能是字符串(baseline)或数值/字符串数字。
-    """
+    """从 per_sample 发现所有 rate（baseline 排最前，其余数值升序）。"""
     rates = {r["rate"] for r in per_sample}
     def _key(r):
         return (-1, 0) if r == BASELINE_TAG else (0, float(r))
@@ -296,80 +357,99 @@ def _all_rates_sorted(per_sample):
 
 
 def _category_rows(per_sample):
-    """按 official_category 分类统计（所有 rate 合在一张表，每行 = category × rate）。
-
-    rate 含 baseline 与各压缩档位，baseline 排最前。
-    每个指标输出均值/最大/最小。
-    """
-    # 按 (official_category, rate) 分组
+    """按 official_category 分类统计（每行 = category × rate）。"""
     groups = defaultdict(list)
     for r in per_sample:
         groups[(r["official_category"], r["rate"])].append(r)
-
     all_rates = _all_rates_sorted(per_sample)
     out = []
     for cat in sorted({r["official_category"] for r in per_sample}):
         for rate in all_rates:
             items = groups.get((cat, rate), [])
-            agg = _agg(items)
             row = {"official_category": cat, "rate": rate}
-            row.update(_flatten_agg(agg))
+            row.update(_flatten_agg(_agg(items)))
             out.append(row)
     return out
 
 
 def _category_tasktype_rows(per_sample):
-    """按 official_category × task_type 二级分类统计（每行 = category × task_type × rate）。
-
-    先按 official_category 分，再在每个 category 下按 task_type 分。
-    rate 含 baseline 与各压缩档位，baseline 排最前。
-    每个指标输出均值/最大/最小。
-    """
+    """按 official_category × task_type 二级分类统计（每行 = category × task_type × rate）。"""
     groups = defaultdict(list)
     for r in per_sample:
         groups[(r["official_category"], r["task_type"], r["rate"])].append(r)
-
     all_rates = _all_rates_sorted(per_sample)
     out = []
     for cat in sorted({r["official_category"] for r in per_sample}):
-        # 该 category 下的所有 task_type
         for tt in sorted({r["task_type"] for r in per_sample if r["official_category"] == cat}):
             for rate in all_rates:
                 items = groups.get((cat, tt, rate), [])
-                agg = _agg(items)
                 row = {"official_category": cat, "task_type": tt, "rate": rate}
-                row.update(_flatten_agg(agg))
+                row.update(_flatten_agg(_agg(items)))
                 out.append(row)
     return out
 
 
 def _overall_rows(per_sample):
-    """总体统计（每行 = 一个 rate 含 baseline，跨所有 category/task_type）。"""
+    """总体统计（每行 = 一个 rate）。"""
     all_rates = _all_rates_sorted(per_sample)
     out = []
     for rate in all_rates:
         items = [r for r in per_sample if r["rate"] == rate]
-        agg = _agg(items)
         row = {"official_category": "OVERALL", "rate": rate}
-        row.update(_flatten_agg(agg))
+        row.update(_flatten_agg(_agg(items)))
         out.append(row)
     return out
+
+
+def _measure_baseline_prefill(rows, tokenizer, llm, max_total_token, max_gen, warmup=0):
+    """compress 模式专用：只测原始 prompt 的 prefill 时间（max_tokens=1），不判分、不输出统计。
+
+    返回 {id: prefill_s}，供 compress 算加速比。同时返回 {id: 原始 prompt token}。
+    """
+    prefill_sp = SamplingParams(temperature=0.0, max_tokens=1, top_p=1.0)
+    prefill_by_id = {}
+    tokens_by_id = {}
+    batch_size = 8
+    global_idx = 0
+    for i in tqdm(range(0, len(rows), batch_size), desc="[baseline prefill 测速]"):
+        batch = rows[i: i + batch_size]
+        prompts = []
+        metas = []
+        for sample in batch:
+            prompt, _ = _build_prompt(
+                tokenizer, sample["function"], sample["user_prompt"], max_total_token, max_gen
+            )
+            prompts.append(prompt)
+            metas.append({"id": sample["id"], "idx": global_idx,
+                          "tok": len(tokenizer.encode(prompt, add_special_tokens=False))})
+            global_idx += 1
+        t0 = time.perf_counter()
+        with torch.cuda.device("cuda:0"):
+            llm.generate(prompts, prefill_sp)
+        pf = (time.perf_counter() - t0) / len(batch)
+        for m in metas:
+            if m["idx"] < warmup:
+                continue
+            prefill_by_id[m["id"]] = pf
+            tokens_by_id[m["id"]] = m["tok"]
+    return prefill_by_id, tokens_by_id
 
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("-c", "--config", required=True)
-    ap.add_argument("--debug", action="store_true", help="只用前 20 条（快速验证）")
+    ap.add_argument("--mode", default="compress_func",
+                    choices=["baseline", "compress_func"],
+                    help="baseline=不压缩；compress_func=reranker 压缩（输出不含 baseline 行）")
+    ap.add_argument("--debug", action="store_true", help="只用前 20 条")
     ap.add_argument("-n", "--n", type=int, default=0, help="总样本数（含 warmup，0=全部）")
-    ap.add_argument("--warmup", type=int, default=2, help="前 N 条 warmup 不计入统计（默认 2）")
-    ap.add_argument("--rates", type=str, default="", help="覆盖配置的 rate 列表，逗号分隔，如 10,8,6")
+    ap.add_argument("--warmup", type=int, default=2, help="前 N 条 warmup 不计入统计")
+    ap.add_argument("--rates", type=str, default="", help="覆盖 rate 列表，逗号分隔，如 10,8,6（仅 compress_func）")
     ap.add_argument("--output", default="../output", help="输出根目录")
     args = ap.parse_args()
 
     with open(args.config, "r", encoding="utf-8") as f:
         cfg = yaml.safe_load(f)
-
-    # dataset_dir 默认指向本地 eval.jsonl
     if not cfg.get("dataset_dir"):
         cfg["dataset_dir"] = os.path.join(os.path.dirname(__file__), "..", "data")
 
@@ -381,10 +461,11 @@ def main():
     if args.warmup >= len(rows):
         print(f"[warn] warmup({args.warmup}) >= 样本数({len(rows)})，统计样本为 0")
     stat_n = max(0, len(rows) - args.warmup)
-    print(f"样本数: {len(rows)}（warmup {args.warmup} 条不计入，统计 {stat_n} 条）")
+    print(f"模式: {args.mode} | 样本数: {len(rows)}（warmup {args.warmup}，统计 {stat_n} 条）")
 
     rates = [float(x) for x in args.rates.split(",")] if args.rates else cfg["reranker_config"]["rate"]
-    print(f"压缩 rate 档位: {rates}")
+    if args.mode == "compress_func":
+        print(f"压缩 rate 档位: {rates}")
 
     tokenizer = AutoTokenizer.from_pretrained(
         cfg["llm_config"]["llm"]["model_name"], trust_remote_code=True
@@ -395,94 +476,100 @@ def main():
 
     ranker, llm = build_components(cfg)
 
-    # ---- baseline：原始 prompt 的 token + prefill 耗时 ----
-    print("\n===== baseline（原始，不压缩）=====")
-    base_rec = _run_batch(
-        cfg, "baseline", None, rows, tokenizer, ranker, llm,
-        max_total_token, max_gen, instruction, warmup=args.warmup,
-    )
-
-    # ---- compress_func：每个 rate 跑压缩 ----
-    comp_rec_by_rate = {}
-    for rate in rates:
-        print(f"\n===== compress_func rate={rate} =====")
-        comp_rec_by_rate[rate] = _run_batch(
-            cfg, "compress_func", rate, rows, tokenizer, ranker, llm,
-            max_total_token, max_gen, instruction, warmup=args.warmup,
-        )
-
-    # ---- 构造 per-sample 明细 ----
-    per_sample = _build_per_sample_table(rows, base_rec, comp_rec_by_rate)
-
     # ---- 输出目录 ----
     exp_name = cfg["exp_config"]["name"]
-    rate_tag = "rate" + "-".join(str(r) for r in rates)
-    sub = f"stat_n{args.n if args.n else 'all'}_warmup{args.warmup}_{rate_tag}"
+    mode_tag = args.mode
+    if args.mode == "compress_func":
+        rate_tag = "_rate" + "-".join(str(r) for r in rates)
+    else:
+        rate_tag = ""
+    sub = f"stat_{mode_tag}{rate_tag}_n{args.n if args.n else 'all'}_warmup{args.warmup}"
     if args.debug:
         sub += "_debug"
     report_dir = os.path.join(args.output, exp_name, sub)
     os.makedirs(report_dir, exist_ok=True)
 
+    per_sample = []
+
+    if args.mode == "baseline":
+        print("\n===== baseline（不压缩，生成 + 判分 + prefill 计时）=====")
+        rec = _run_batch(
+            cfg, "baseline", None, rows, tokenizer, ranker, llm,
+            max_total_token, max_gen, instruction, warmup=args.warmup,
+        )
+        per_sample = _per_sample_rows("baseline", rows, rec, None)
+
+        # 存 baseline 结果，供 compress 模式读取算加速比
+        base_dump = {
+            "prefill_by_id": {sid: r["prefill_s"] for sid, r in rec.items()},
+            "tokens_by_id": {sid: r["prompt_tokens"] for sid, r in rec.items()},
+        }
+        with open(os.path.join(report_dir, "baseline_prefill.json"), "w", encoding="utf-8") as f:
+            json.dump(base_dump, f, ensure_ascii=False, indent=2)
+
+    else:  # compress_func
+        # compress 算加速比需要 baseline prefill：内部补测一次（仅计时，不输出统计）
+        print("\n===== 补测 baseline prefill（仅用于算加速比，不计入输出）=====")
+        base_prefill_by_id, orig_tokens_by_id = _measure_baseline_prefill(
+            rows, tokenizer, llm, max_total_token, max_gen, warmup=args.warmup
+        )
+
+        for rate in rates:
+            print(f"\n===== compress_func rate={rate}（压缩 + 生成 + 判分 + prefill 计时）=====")
+            rec = _run_batch(
+                cfg, "compress_func", rate, rows, tokenizer, ranker, llm,
+                max_total_token, max_gen, instruction, warmup=args.warmup,
+            )
+            per_sample.extend(_per_sample_rows(
+                "compress_func", rows, rec, rate,
+                base_prefill_by_id=base_prefill_by_id,
+                orig_tokens_by_id=orig_tokens_by_id,
+            ))
+
     # ---- 写 CSV ----
-    # 1) per-sample 明细
-    per_sample_path = os.path.join(report_dir, "per_sample.csv")
-    _write_csv(per_sample_path, per_sample, PER_SAMPLE_COLS)
-
-    # 2) 总体统计（每行一个 rate，含 baseline）
-    overall_path = os.path.join(report_dir, "overall.csv")
-    _write_csv(overall_path, _overall_rows(per_sample),
+    _write_csv(os.path.join(report_dir, "per_sample.csv"), per_sample, PER_SAMPLE_COLS)
+    _write_csv(os.path.join(report_dir, "overall.csv"), _overall_rows(per_sample),
                ["official_category", "rate"] + CATEGORY_COLS)
-
-    # 3) 按 official_category 分类统计（含 baseline）
-    by_cat_path = os.path.join(report_dir, "by_official_category.csv")
-    _write_csv(by_cat_path, _category_rows(per_sample),
+    _write_csv(os.path.join(report_dir, "by_official_category.csv"), _category_rows(per_sample),
                ["official_category", "rate"] + CATEGORY_COLS)
-
-    # 4) 按 official_category × task_type 二级分类统计（含 baseline）
-    by_cat_tt_path = os.path.join(report_dir, "by_official_category_task_type.csv")
-    _write_csv(by_cat_tt_path, _category_tasktype_rows(per_sample),
+    _write_csv(os.path.join(report_dir, "by_official_category_task_type.csv"),
+               _category_tasktype_rows(per_sample),
                ["official_category", "task_type", "rate"] + CATEGORY_COLS)
 
-    # ---- 同时输出 per-sample JSON（含完整 baseline/压缩记录，便于后续复用）----
-    json_path = os.path.join(report_dir, "stat.json")
-    with open(json_path, "w", encoding="utf-8") as f:
+    # per-sample JSON（含完整记录，便于复用）
+    with open(os.path.join(report_dir, "stat.json"), "w", encoding="utf-8") as f:
         json.dump({
-            "config": args.config,
-            "num_stat_samples": stat_n,
-            "warmup": args.warmup,
-            "rates": rates,
+            "mode": args.mode, "config": args.config,
+            "num_stat_samples": stat_n, "warmup": args.warmup,
+            "rates": rates if args.mode == "compress_func" else None,
             "model": cfg["llm_config"]["llm"]["model_name"],
             "per_sample": per_sample,
-            "baseline_records": base_rec,
-            "compress_records": {str(k): v for k, v in comp_rec_by_rate.items()},
         }, f, ensure_ascii=False, indent=2)
 
+    # ---- 终端摘要 ----
     all_rates = _all_rates_sorted(per_sample)
     print("\n" + "=" * 60)
-    print(f"统计完成，共 {len(per_sample)} 条 per-sample 记录"
-          f"（{stat_n} 样本 × {len(all_rates)} 档[baseline+{len(rates)}压缩]）")
+    print(f"统计完成 [{args.mode}]，{len(per_sample)} 条 per-sample 记录")
     print(f"输出目录: {report_dir}")
-    print(f"  - per_sample.csv              (逐条样本明细，含 baseline 行)")
-    print(f"  - overall.csv                  (总体统计，含 baseline)")
-    print(f"  - by_official_category.csv     (按 official_category 分类统计，含 baseline)")
-    print(f"  - by_official_category_task_type.csv (category × task_type 二级分类，含 baseline)")
-    print(f"  - stat.json                    (完整数据，便于后续复用)")
+    print(f"  - per_sample.csv / overall.csv / by_official_category.csv / by_official_category_task_type.csv")
+    print(f"  - stat.json")
+    if args.mode == "baseline":
+        print(f"  - baseline_prefill.json（供 compress 模式算加速比）")
     print("=" * 60)
 
-    # 终端打印总体摘要（含 baseline 对照）
-    print("\n【总体统计·均值】")
-    print(f"{'rate':>10} {'num':>4} {'tools_orig':>10} {'tools_kept':>10} {'gt':>5} "
-          f"{'prompt_tok':>10} {'comp_tok':>9} {'tok_cr':>7} {'tool_cr':>8} {'speedup':>8}")
+    print(f"\n【总体统计·均值】 mode={args.mode}")
+    print(f"{'rate':>10} {'num':>4} {'tools_kpt':>9} {'gt':>5} {'tok_comp':>8} "
+          f"{'exact':>6} {'super':>6} {'subset':>6} {'top1':>6} {'top3':>6} {'speedup':>8}")
     for rate in all_rates:
         items = [r for r in per_sample if r["rate"] == rate]
         if not items:
             continue
         n = len(items)
         avg = lambda k: sum(float(r[k]) for r in items) / n
-        print(f"{str(rate):>10} {n:>4} {avg('n_tools_total'):>10.2f} {avg('n_tools_kept'):>10.2f} "
-              f"{avg('n_gt_funcs'):>5.2f} {avg('prompt_tokens_total'):>10.0f} "
-              f"{avg('prompt_tokens_compressed'):>9.0f} {avg('token_compress_ratio'):>7.4f} "
-              f"{avg('tools_compress_ratio'):>8.4f} {avg('speedup_prefill'):>8.4f}")
+        sp = f"{avg('speedup_prefill'):.4f}" if items[0].get("speedup_prefill") not in ("", None) else "-"
+        print(f"{str(rate):>10} {n:>4} {avg('n_tools_kept'):>9.2f} {avg('n_gt_funcs'):>5.2f} "
+              f"{avg('token_compress_ratio'):>8.4f} {avg('exact_match'):>6.3f} {avg('superset_match'):>6.3f} "
+              f"{avg('subset_match'):>6.3f} {avg('top1_match'):>6.3f} {avg('top3_match'):>6.3f} {sp:>8}")
 
 
 if __name__ == "__main__":
