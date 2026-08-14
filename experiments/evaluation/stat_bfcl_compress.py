@@ -49,6 +49,7 @@ sys.path.append(os.path.dirname(__file__))
 
 from eval_bfcl_parallel_multi_turn import (  # noqa: E402
     DEFAULT_INSTRUCTION,
+    _bfcl_to_openai_tools,
     _build_prompt,
     _compress_tools,
     _extract_current_turn,
@@ -56,6 +57,17 @@ from eval_bfcl_parallel_multi_turn import (  # noqa: E402
     load_bfcl_eval,
 )
 import bfcl_metrics  # noqa: E402
+
+
+def _tools_token_count(tokenizer, func_list):
+    """工具文档 token 数：OpenAI 格式 JSON 序列化后 tokenize（与 benchmark_bfcl.py 同口径）。
+
+    只统计函数文档本身，不含 system/user_prompt 部分，直接反映压缩目标。
+    """
+    tools_json = "\n".join(
+        json.dumps(t, ensure_ascii=False) for t in _bfcl_to_openai_tools(func_list)
+    )
+    return len(tokenizer.encode(tools_json, add_special_tokens=False))
 
 # baseline 在 rate 列里的标记
 BASELINE_TAG = "baseline"
@@ -126,6 +138,9 @@ def _run_batch(yaml_args, mode, rate, rows, tokenizer, ranker, llm,
             )
             build_s = time.perf_counter() - t0
             prompt_tokens = len(tokenizer.encode(prompt, add_special_tokens=False))
+            # 工具文档 token（原始全部 + 压缩后保留），与 benchmark_bfcl.py 同口径
+            tools_tokens_total = _tools_token_count(tokenizer, func_list)
+            tools_tokens_compressed = _tools_token_count(tokenizer, kept_funcs)
 
             prompts.append(prompt)
             metas.append({
@@ -138,6 +153,8 @@ def _run_batch(yaml_args, mode, rate, rows, tokenizer, ranker, llm,
                 "reranker_s": reranker_s,
                 "build_s": build_s,
                 "prompt_tokens": prompt_tokens,
+                "tools_tokens_total": tools_tokens_total,
+                "tools_tokens_compressed": tools_tokens_compressed,
             })
             global_idx += 1
 
@@ -166,6 +183,8 @@ def _run_batch(yaml_args, mode, rate, rows, tokenizer, ranker, llm,
                 "n_tools_kept": m["n_tools_kept"],
                 "n_gt_funcs": m["n_gt_funcs"],
                 "prompt_tokens": m["prompt_tokens"],
+                "tools_tokens_total": m["tools_tokens_total"],
+                "tools_tokens_compressed": m["tools_tokens_compressed"],
                 "reranker_s": m["reranker_s"],
                 "build_s": m["build_s"],
                 "prefill_s": prefill_s_per,
@@ -216,6 +235,7 @@ def _per_sample_rows(mode, rows, rec, rate, base_prefill_by_id=None, orig_tokens
             comp_tok = r["prompt_tokens"]
             token_cr = 1.0
             tools_cr = 1.0
+            tools_tok_cr = 1.0
             reranker_s = 0.0
             prefill_comp = r["prefill_s"]
             prefill_base = r["prefill_s"]
@@ -233,6 +253,16 @@ def _per_sample_rows(mode, rows, rec, rate, base_prefill_by_id=None, orig_tokens
             e2e = reranker_s + prefill_comp
             speedup = (prefill_base / e2e) if (prefill_base and e2e) else 0.0
             rate_val = rate
+        # tools token：baseline 下原始=压缩（不压缩）；compress 下原始取自 records，压缩取自 records
+        tools_tok_total = r["tools_tokens_total"]
+        tools_tok_comp = r["tools_tokens_compressed"]
+        if mode == "baseline":
+            tools_tok_cr = 1.0
+        else:
+            tools_tok_cr = (tools_tok_comp / tools_tok_total) if tools_tok_total else 0.0
+        # tools token 占总 prompt token 的比例（原始 / 压缩后）
+        tools_ratio_total = (tools_tok_total / orig_tok) if orig_tok else 0.0
+        tools_ratio_comp = (tools_tok_comp / comp_tok) if comp_tok else 0.0
 
         row = {
             "id": sid,
@@ -242,6 +272,11 @@ def _per_sample_rows(mode, rows, rec, rate, base_prefill_by_id=None, orig_tokens
             "n_tools_total": n_total,
             "n_tools_kept": r["n_tools_kept"],
             "n_gt_funcs": r["n_gt_funcs"],
+            "tools_tokens_total": tools_tok_total,
+            "tools_tokens_compressed": tools_tok_comp,
+            "tools_token_compress_ratio": f"{tools_tok_cr:.4f}",
+            "tools_ratio_in_prompt_total": f"{tools_ratio_total:.4f}",
+            "tools_ratio_in_prompt_compressed": f"{tools_ratio_comp:.4f}",
             "prompt_tokens_total": orig_tok,
             "prompt_tokens_compressed": comp_tok,
             "token_compress_ratio": f"{token_cr:.4f}",
@@ -278,6 +313,11 @@ def _agg(records):
     out["n_tools_total"] = stats("n_tools_total", "{:.2f}")
     out["n_tools_kept"] = stats("n_tools_kept", "{:.2f}")
     out["n_gt_funcs"] = stats("n_gt_funcs", "{:.2f}")
+    out["tools_tokens_total"] = stats("tools_tokens_total", "{:.1f}")
+    out["tools_tokens_compressed"] = stats("tools_tokens_compressed", "{:.1f}")
+    out["tools_token_compress_ratio"] = stats("tools_token_compress_ratio")
+    out["tools_ratio_in_prompt_total"] = stats("tools_ratio_in_prompt_total")
+    out["tools_ratio_in_prompt_compressed"] = stats("tools_ratio_in_prompt_compressed")
     out["prompt_tokens_total"] = stats("prompt_tokens_total", "{:.1f}")
     out["prompt_tokens_compressed"] = stats("prompt_tokens_compressed", "{:.1f}")
     out["token_compress_ratio"] = stats("token_compress_ratio")
@@ -313,6 +353,11 @@ CATEGORY_COLS = [
     "n_tools_total_mean", "n_tools_total_max", "n_tools_total_min",
     "n_tools_kept_mean", "n_tools_kept_max", "n_tools_kept_min",
     "n_gt_funcs_mean", "n_gt_funcs_max", "n_gt_funcs_min",
+    "tools_tokens_total_mean", "tools_tokens_total_max", "tools_tokens_total_min",
+    "tools_tokens_compressed_mean", "tools_tokens_compressed_max", "tools_tokens_compressed_min",
+    "tools_token_compress_ratio_mean", "tools_token_compress_ratio_max", "tools_token_compress_ratio_min",
+    "tools_ratio_in_prompt_total_mean", "tools_ratio_in_prompt_total_max", "tools_ratio_in_prompt_total_min",
+    "tools_ratio_in_prompt_compressed_mean", "tools_ratio_in_prompt_compressed_max", "tools_ratio_in_prompt_compressed_min",
     "prompt_tokens_total_mean", "prompt_tokens_total_max", "prompt_tokens_total_min",
     "prompt_tokens_compressed_mean", "prompt_tokens_compressed_max", "prompt_tokens_compressed_min",
     "token_compress_ratio_mean", "token_compress_ratio_max", "token_compress_ratio_min",
@@ -331,6 +376,8 @@ CATEGORY_COLS = [
 PER_SAMPLE_COLS = [
     "id", "official_category", "task_type", "rate",
     "n_tools_total", "n_tools_kept", "n_gt_funcs",
+    "tools_tokens_total", "tools_tokens_compressed", "tools_token_compress_ratio",
+    "tools_ratio_in_prompt_total", "tools_ratio_in_prompt_compressed",
     "prompt_tokens_total", "prompt_tokens_compressed",
     "token_compress_ratio", "tools_compress_ratio",
     "exact_match", "superset_match", "subset_match", "top1_match", "top3_match",
@@ -558,8 +605,8 @@ def main():
     print("=" * 60)
 
     print(f"\n【总体统计·均值】 mode={args.mode}")
-    print(f"{'rate':>10} {'num':>4} {'tools_kpt':>9} {'gt':>5} {'tok_comp':>8} "
-          f"{'exact':>6} {'super':>6} {'subset':>6} {'top1':>6} {'top3':>6} {'speedup':>8}")
+    print(f"{'rate':>10} {'num':>4} {'tools_kpt':>9} {'gt':>5} {'tools_tok':>9} "
+          f"{'tok_comp':>8} {'exact':>6} {'super':>6} {'subset':>6} {'top1':>6} {'top3':>6} {'speedup':>8}")
     for rate in all_rates:
         items = [r for r in per_sample if r["rate"] == rate]
         if not items:
@@ -568,8 +615,9 @@ def main():
         avg = lambda k: sum(float(r[k]) for r in items) / n
         sp = f"{avg('speedup_prefill'):.4f}" if items[0].get("speedup_prefill") not in ("", None) else "-"
         print(f"{str(rate):>10} {n:>4} {avg('n_tools_kept'):>9.2f} {avg('n_gt_funcs'):>5.2f} "
-              f"{avg('token_compress_ratio'):>8.4f} {avg('exact_match'):>6.3f} {avg('superset_match'):>6.3f} "
-              f"{avg('subset_match'):>6.3f} {avg('top1_match'):>6.3f} {avg('top3_match'):>6.3f} {sp:>8}")
+              f"{avg('tools_tokens_compressed'):>9.0f} {avg('token_compress_ratio'):>8.4f} "
+              f"{avg('exact_match'):>6.3f} {avg('superset_match'):>6.3f} {avg('subset_match'):>6.3f} "
+              f"{avg('top1_match'):>6.3f} {avg('top3_match'):>6.3f} {sp:>8}")
 
 
 if __name__ == "__main__":
