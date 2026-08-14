@@ -45,6 +45,9 @@ from eval_bfcl_parallel_multi_turn import (  # noqa: E402
     load_bfcl_eval,
 )
 
+# baseline 在 rate 列里的标记（字符串，便于和数值 rate 区分；baseline 行始终排在所有压缩档位之前）
+BASELINE_TAG = "baseline"
+
 
 def _gt_func_names(sample):
     """从 ground_truth 取出真值工具名集合。ground_truth 结构: [{func_name: {params...}}, ...]。"""
@@ -136,9 +139,11 @@ def _run_batch(yaml_args, mode, rate, rows, tokenizer, ranker, llm,
 
 
 def _build_per_sample_table(rows, base_rec, comp_rec_by_rate):
-    """构造 per-sample 明细表：每条样本 × 每个 rate 一行。
+    """构造 per-sample 明细表：每条样本 × 每个 rate 一行，外加每条样本一行 baseline。
 
     压缩率 / 加速比都基于同一样本的 baseline 与压缩结果配对计算。
+    baseline 行作为对照基准：压缩率=1.0、加速比=1.0、reranker 耗时=0、
+    压缩后 token=原始 token、压缩后 prefill=baseline prefill。
     """
     out = []
     for sample in rows:
@@ -146,6 +151,27 @@ def _build_per_sample_table(rows, base_rec, comp_rec_by_rate):
         b = base_rec.get(sid)
         if b is None:
             continue  # warmup 跳过的样本无 baseline
+
+        # baseline 行（对照基准）
+        out.append({
+            "id": sid,
+            "official_category": b["official_category"],
+            "task_type": b["task_type"],
+            "rate": BASELINE_TAG,
+            "n_tools_total": b["n_tools_total"],
+            "n_tools_kept": b["n_tools_total"],          # baseline 不压缩，保留全部
+            "n_gt_funcs": b["n_gt_funcs"],
+            "prompt_tokens_total": b["prompt_tokens"],      # 原始 prompt 总 token
+            "prompt_tokens_compressed": b["prompt_tokens"],  # baseline = 原始
+            "token_compress_ratio": "1.0000",                # baseline 压缩率 = 1
+            "tools_compress_ratio": "1.0000",                # baseline tools 压缩率 = 1
+            "reranker_s": "0.0000",                          # baseline 无 reranker
+            "prefill_s_compressed": f"{b['prefill_s']:.4f}",  # baseline prefill
+            "prefill_s_baseline": f"{b['prefill_s']:.4f}",
+            "speedup_prefill": "1.0000",                    # baseline 加速比 = 1
+        })
+
+        # 各压缩 rate 行
         for rate, comp_map in comp_rec_by_rate.items():
             c = comp_map.get(sid)
             if c is None:
@@ -207,7 +233,11 @@ def _agg(records):
 
 
 def _flatten_agg(agg, prefix=""):
-    """把 _agg 返回的嵌套 dict 摊平为 {列名: 值}，便于写 CSV 一行。"""
+    """把 _agg 返回的嵌套 dict 摊平为 {列名: 值}，便于写 CSV 一行。
+
+    注意：stats() 返回的 key 已带字段名前缀（如 n_tools_total_mean），
+    这里直接用 sk 即可，不要再拼 key（否则变 n_tools_total_n_tools_total_mean 双重前缀）。
+    """
     if agg is None:
         return {}
     flat = {"num": agg["num"]}
@@ -215,7 +245,7 @@ def _flatten_agg(agg, prefix=""):
         if key == "num" or not isinstance(sub, dict):
             continue
         for sk, sv in sub.items():
-            flat[f"{prefix}{key}_{sk}"] = sv
+            flat[f"{prefix}{sk}"] = sv
     return flat
 
 
@@ -254,9 +284,21 @@ def _write_csv(path, rows, cols):
             w.writerow(r)
 
 
-def _category_rows(per_sample, rates):
+def _all_rates_sorted(per_sample):
+    """从 per_sample 里动态发现所有 rate（含 baseline），排序返回。
+
+    baseline 始终排最前，其余按数值升序。rate 可能是字符串(baseline)或数值/字符串数字。
+    """
+    rates = {r["rate"] for r in per_sample}
+    def _key(r):
+        return (-1, 0) if r == BASELINE_TAG else (0, float(r))
+    return sorted(rates, key=_key)
+
+
+def _category_rows(per_sample):
     """按 official_category 分类统计（所有 rate 合在一张表，每行 = category × rate）。
 
+    rate 含 baseline 与各压缩档位，baseline 排最前。
     每个指标输出均值/最大/最小。
     """
     # 按 (official_category, rate) 分组
@@ -264,10 +306,10 @@ def _category_rows(per_sample, rates):
     for r in per_sample:
         groups[(r["official_category"], r["rate"])].append(r)
 
+    all_rates = _all_rates_sorted(per_sample)
     out = []
-    # 按 official_category 顺序、rate 顺序排列
     for cat in sorted({r["official_category"] for r in per_sample}):
-        for rate in rates:
+        for rate in all_rates:
             items = groups.get((cat, rate), [])
             agg = _agg(items)
             row = {"official_category": cat, "rate": rate}
@@ -276,21 +318,23 @@ def _category_rows(per_sample, rates):
     return out
 
 
-def _category_tasktype_rows(per_sample, rates):
+def _category_tasktype_rows(per_sample):
     """按 official_category × task_type 二级分类统计（每行 = category × task_type × rate）。
 
     先按 official_category 分，再在每个 category 下按 task_type 分。
+    rate 含 baseline 与各压缩档位，baseline 排最前。
     每个指标输出均值/最大/最小。
     """
     groups = defaultdict(list)
     for r in per_sample:
         groups[(r["official_category"], r["task_type"], r["rate"])].append(r)
 
+    all_rates = _all_rates_sorted(per_sample)
     out = []
     for cat in sorted({r["official_category"] for r in per_sample}):
         # 该 category 下的所有 task_type
         for tt in sorted({r["task_type"] for r in per_sample if r["official_category"] == cat}):
-            for rate in rates:
+            for rate in all_rates:
                 items = groups.get((cat, tt, rate), [])
                 agg = _agg(items)
                 row = {"official_category": cat, "task_type": tt, "rate": rate}
@@ -299,10 +343,11 @@ def _category_tasktype_rows(per_sample, rates):
     return out
 
 
-def _overall_rows(per_sample, rates):
-    """总体统计（每行 = 一个 rate，跨所有 category/task_type）。"""
+def _overall_rows(per_sample):
+    """总体统计（每行 = 一个 rate 含 baseline，跨所有 category/task_type）。"""
+    all_rates = _all_rates_sorted(per_sample)
     out = []
-    for rate in rates:
+    for rate in all_rates:
         items = [r for r in per_sample if r["rate"] == rate]
         agg = _agg(items)
         row = {"official_category": "OVERALL", "rate": rate}
@@ -383,19 +428,19 @@ def main():
     per_sample_path = os.path.join(report_dir, "per_sample.csv")
     _write_csv(per_sample_path, per_sample, PER_SAMPLE_COLS)
 
-    # 2) 总体统计（每行一个 rate）
+    # 2) 总体统计（每行一个 rate，含 baseline）
     overall_path = os.path.join(report_dir, "overall.csv")
-    _write_csv(overall_path, _overall_rows(per_sample, rates),
+    _write_csv(overall_path, _overall_rows(per_sample),
                ["official_category", "rate"] + CATEGORY_COLS)
 
-    # 3) 按 official_category 分类统计
+    # 3) 按 official_category 分类统计（含 baseline）
     by_cat_path = os.path.join(report_dir, "by_official_category.csv")
-    _write_csv(by_cat_path, _category_rows(per_sample, rates),
+    _write_csv(by_cat_path, _category_rows(per_sample),
                ["official_category", "rate"] + CATEGORY_COLS)
 
-    # 4) 按 official_category × task_type 二级分类统计
+    # 4) 按 official_category × task_type 二级分类统计（含 baseline）
     by_cat_tt_path = os.path.join(report_dir, "by_official_category_task_type.csv")
-    _write_csv(by_cat_tt_path, _category_tasktype_rows(per_sample, rates),
+    _write_csv(by_cat_tt_path, _category_tasktype_rows(per_sample),
                ["official_category", "task_type", "rate"] + CATEGORY_COLS)
 
     # ---- 同时输出 per-sample JSON（含完整 baseline/压缩记录，便于后续复用）----
@@ -412,27 +457,29 @@ def main():
             "compress_records": {str(k): v for k, v in comp_rec_by_rate.items()},
         }, f, ensure_ascii=False, indent=2)
 
+    all_rates = _all_rates_sorted(per_sample)
     print("\n" + "=" * 60)
-    print(f"统计完成，共 {len(per_sample)} 条 per-sample 记录（{stat_n} 样本 × {len(rates)} rate）")
+    print(f"统计完成，共 {len(per_sample)} 条 per-sample 记录"
+          f"（{stat_n} 样本 × {len(all_rates)} 档[baseline+{len(rates)}压缩]）")
     print(f"输出目录: {report_dir}")
-    print(f"  - per_sample.csv              (逐条样本明细)")
-    print(f"  - overall.csv                  (总体统计，每行一个 rate)")
-    print(f"  - by_official_category.csv     (按 official_category 分类统计)")
-    print(f"  - by_official_category_task_type.csv (category × task_type 二级分类)")
+    print(f"  - per_sample.csv              (逐条样本明细，含 baseline 行)")
+    print(f"  - overall.csv                  (总体统计，含 baseline)")
+    print(f"  - by_official_category.csv     (按 official_category 分类统计，含 baseline)")
+    print(f"  - by_official_category_task_type.csv (category × task_type 二级分类，含 baseline)")
     print(f"  - stat.json                    (完整数据，便于后续复用)")
     print("=" * 60)
 
-    # 终端打印总体摘要
+    # 终端打印总体摘要（含 baseline 对照）
     print("\n【总体统计·均值】")
-    print(f"{'rate':>6} {'num':>4} {'tools_orig':>10} {'tools_kept':>10} {'gt':>5} "
+    print(f"{'rate':>10} {'num':>4} {'tools_orig':>10} {'tools_kept':>10} {'gt':>5} "
           f"{'prompt_tok':>10} {'comp_tok':>9} {'tok_cr':>7} {'tool_cr':>8} {'speedup':>8}")
-    for rate in rates:
+    for rate in all_rates:
         items = [r for r in per_sample if r["rate"] == rate]
         if not items:
             continue
         n = len(items)
         avg = lambda k: sum(float(r[k]) for r in items) / n
-        print(f"{rate:>6} {n:>4} {avg('n_tools_total'):>10.2f} {avg('n_tools_kept'):>10.2f} "
+        print(f"{str(rate):>10} {n:>4} {avg('n_tools_total'):>10.2f} {avg('n_tools_kept'):>10.2f} "
               f"{avg('n_gt_funcs'):>5.2f} {avg('prompt_tokens_total'):>10.0f} "
               f"{avg('prompt_tokens_compressed'):>9.0f} {avg('token_compress_ratio'):>7.4f} "
               f"{avg('tools_compress_ratio'):>8.4f} {avg('speedup_prefill'):>8.4f}")
