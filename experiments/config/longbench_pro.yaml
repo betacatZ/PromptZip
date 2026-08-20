@@ -1,0 +1,42 @@
+dataset_path: /home/zdm/code/PromptZip/datasets/LongBench-Pro/longbench_pro.json
+
+exp_config:
+  name: lbpro_rerank_qwen3_8b
+  batch_size: 8            # 单批样本数;LongBench-Pro 上下文长,建议小批
+  max_total_token: 32768   # 压缩后 prompt 总长度上限;原文最长 256k,压缩后应远小于此
+  max_new_tokens: 2048    # 生成上限;答案最多 55 个 component(多行),需够长
+
+# reranker 压缩配置
+# 用 Qwen3-Reranker 对长 context 做相关性 chunk 选择,压缩后送 Qwen3-8B 回答
+reranker_config:
+  model_type: rerank
+  # TODO(服务器): 替换为服务器上的 Qwen3-Reranker 模型路径(如 Qwen/Qwen3-Reranker-0.6B 或 8B)
+  model_name: Qwen/Qwen3-Reranker-0.6B
+  max_position_embeddings: 131072   # reranker 最大位置编码;LongBench-Pro 最长 256k,reranker 单次打分 chunk 不超此即可
+  chunk_size: [256]                 # 切分大小
+  # rate<1 为保留比例(如 0.3 保留 30% chunk),>=1 为绝对 chunk 数
+  rate: [0.3, 0.4, 0.5]
+  device_id: 0                      # reranker 所在 GPU
+  engine: vllm                      # hf 或 vllm
+  selection_mode: topk             # topk/pure-topk/cluster/topp/cluster-zscore/threshold/shunt
+
+# compressor 配置(rerank 之上不再做 token 级压缩;设 null 跳过)
+compressor_config:
+  model_type: null
+
+# 目标 LLM(Qwen3-8B)
+llm_config:
+  device_ids: 1                    # LLM 所在 GPU(与 reranker 分开)
+  llm:
+    # TODO(服务器): 替换为服务器上的 Qwen3-8B-Instruct 模型路径
+    model_name: Qwen/Qwen3-8B
+    tp: 1                          # tensor parallel
+  sampling:
+    temperature: 0.0               # 贪心,保证可复现
+    max_tokens: 2048
+
+# Summary 任务(T4.1/T4.2,共 120 样本)指标需要 embedding 模型算语义相似度
+# 用 0.5*semantic_sim + 0.5*rouge_l 的官方 Summary 公式
+# TODO(服务器): 替换为服务器上的 embedding 模型路径(如 Qwen/Qwen3-Embedding-8B 或 BAAI/bge-m3)
+embedding_config:
+  model_name: Qwen/Qwen3-Embedding-8B
