@@ -375,9 +375,12 @@ if __name__ == "__main__":
     if emb_conf and emb_conf.get("model_name"):
         try:
             from sentence_transformers import SentenceTransformer
-            print(f"正在加载 embedding 模型: {emb_conf['model_name']}")
+            emb_device_id = emb_conf.get("device_id", 0)
+            emb_device = f"cuda:{emb_device_id}"
+            print(f"正在加载 embedding 模型: {emb_conf['model_name']} (device={emb_device})")
             embedding_model = SentenceTransformer(
                 emb_conf["model_name"],
+                device=emb_device,
                 tokenizer_kwargs={"padding_side": "left"},
             )
         except Exception as e:

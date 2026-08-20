@@ -40,3 +40,4 @@ llm_config:
 # TODO(服务器): 替换为服务器上的 embedding 模型路径(如 Qwen/Qwen3-Embedding-8B 或 BAAI/bge-m3)
 embedding_config:
   model_name: Qwen/Qwen3-Embedding-8B
+  device_id: 0               # embedding 模型所在 GPU;建议与 reranker 共卡(评分阶段 reranker 已闲置)或单独一卡
