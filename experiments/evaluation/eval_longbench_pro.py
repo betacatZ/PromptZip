@@ -31,7 +31,6 @@ import numpy as np
 import torch
 from tqdm import tqdm
 from transformers import AutoTokenizer
-from datasets import load_dataset
 from vllm import SamplingParams
 
 # 添加 src 目录到 sys.path,与 eval_longbench.py 一致
@@ -46,6 +45,10 @@ from lbpro_metrics import (
     DIMENSION_CONFIG,
     task_metric_config,
 )
+# 注意:不顶层 import datasets/load_dataset。datasets 传递依赖 multiprocess,
+# 该包在 Python 3.12 解释器退出阶段的 __del__ 与 RLock 不兼容会抛
+# "AttributeError: '_thread.RLock' object has no attribute '_recursion_count'"
+# (无害但烦人)。本地 json 存在时不走 load_dataset,故改成懒导入。
 
 warnings.filterwarnings("ignore", category=urllib3.exceptions.InsecureRequestWarning)
 os.environ["HF_ENDPOINT"] = "https://huggingface.co"
@@ -66,7 +69,16 @@ def build_components(yaml_args):
             yaml_args["reranker_config"]["model_name"],
             f"cuda:{yaml_args['reranker_config']['device_id']}",
             chunk_end_tokens=[
-                "。", "！", "？", ".", "!", "?", "\n", "。\n", "？\n", "！\n",
+                "。",
+                "！",
+                "？",
+                ".",
+                "!",
+                "?",
+                "\n",
+                "。\n",
+                "？\n",
+                "！\n",
             ],
             engine=yaml_args["reranker_config"]["engine"],
         )
@@ -76,7 +88,16 @@ def build_components(yaml_args):
             model_name=yaml_args["reranker_config"]["model_name"],
             device=f"cuda:{yaml_args['reranker_config']['device_id']}",
             chunk_end_tokens=[
-                "。", "！", "？", ".", "!", "?", "\n", "。\n", "？\n", "！\n",
+                "。",
+                "！",
+                "？",
+                ".",
+                "!",
+                "?",
+                "\n",
+                "。\n",
+                "？\n",
+                "！\n",
             ],
         )
 
@@ -97,26 +118,30 @@ def load_lbpro_dataset(dataset_path, enable_test=False):
         with open(dataset_path, "r", encoding="utf-8") as f:
             data = json.load(f)
     else:
-        # 回退到 HuggingFace(若本地 json 不存在)
+        # 回退到 HuggingFace(若本地 json 不存在);懒导入避免顶层拉入 multiprocess
+        from datasets import load_dataset
+
         ds = load_dataset("caskcsg/LongBench-Pro", split="test")
         data = list(ds)
 
     samples = []
     for item in data:
-        samples.append({
-            "bon_idx": 1,
-            "id": item["id"],
-            "context": item["context"],
-            "language": item["language"],
-            "token_length": item["token_length"],
-            "primary_task": item["primary_task"],
-            "secondary_task": item["secondary_task"],
-            "contextual_requirement": item["contextual_requirement"],
-            "question_nonthinking": item["question_nonthinking"],
-            "question_thinking": item["question_thinking"],
-            "answer": item["answer"],
-            "difficulty": item["difficulty"],
-        })
+        samples.append(
+            {
+                "bon_idx": 1,
+                "id": item["id"],
+                "context": item["context"],
+                "language": item["language"],
+                "token_length": item["token_length"],
+                "primary_task": item["primary_task"],
+                "secondary_task": item["secondary_task"],
+                "contextual_requirement": item["contextual_requirement"],
+                "question_nonthinking": item["question_nonthinking"],
+                "question_thinking": item["question_thinking"],
+                "answer": item["answer"],
+                "difficulty": item["difficulty"],
+            }
+        )
 
     if enable_test:
         samples = samples[:20]
@@ -138,9 +163,7 @@ async def predict(yaml_args, json_path, enable_test=False):
     max_new_tokens = yaml_args["exp_config"].get("max_new_tokens", DEFAULT_MAX_NEW_TOKENS)
     max_total_token = yaml_args["exp_config"]["max_total_token"]
 
-    tokenizer = AutoTokenizer.from_pretrained(
-        yaml_args["llm_config"]["llm"]["model_name"], trust_remote_code=True
-    )
+    tokenizer = AutoTokenizer.from_pretrained(yaml_args["llm_config"]["llm"]["model_name"], trust_remote_code=True)
 
     reranker, llm = build_components(yaml_args)
 
@@ -172,19 +195,27 @@ async def predict(yaml_args, json_path, enable_test=False):
                     if reranker is not None:
                         # reranker 用 question 作为 query 做相关性打分
                         query = question if question.strip() else "Summarize the document"
-                        if (yaml_args["reranker_config"].get("model_type") == "embedding"
-                                and type(reranker) is EmbeddingCompressor):
+                        if (
+                            yaml_args["reranker_config"].get("model_type") == "embedding"
+                            and type(reranker) is EmbeddingCompressor
+                        ):
                             _, select_chunks, _ = reranker.compress(
-                                context, None, query,
+                                context,
+                                None,
+                                query,
                                 run_config["reranker_config"]["chunk_size"],
                                 run_config["reranker_config"]["rate"],
                                 chunk_method="bypunc",
                                 selection_mode=run_config["reranker_config"].get("selection_mode", "topk"),
                             )
-                        elif (yaml_args["reranker_config"].get("model_type") == "rerank"
-                              and type(reranker) is RerankCompressor):
+                        elif (
+                            yaml_args["reranker_config"].get("model_type") == "rerank"
+                            and type(reranker) is RerankCompressor
+                        ):
                             _, select_chunks, _ = reranker.compress(
-                                context, None, query,
+                                context,
+                                None,
+                                query,
                                 run_config["reranker_config"]["chunk_size"],
                                 run_config["reranker_config"]["rate"],
                                 dataset=f"{sample['id']}_{sample['bon_idx']}",
@@ -201,7 +232,10 @@ async def predict(yaml_args, json_path, enable_test=False):
                     user_content = f"{context}\n\n\n\n{question}"
                     messages = [{"role": "user", "content": user_content}]
                     prompt = tokenizer.apply_chat_template(
-                        messages, tokenize=False, add_generation_prompt=True
+                        messages,
+                        tokenize=False,
+                        add_generation_prompt=True,
+                        enable_thinking=False,
                     )
 
                     # 超长截断:复用 eval_longbench.py 的前后半截断逻辑
@@ -303,9 +337,7 @@ def eval(json_path, embedding_model=None):
     # 各维度平均
     dimension_metrics = {}
     for dim, sort_keys in DIMENSION_CONFIG.items():
-        dimension_metrics[f"average_{dim}_metric"] = calculate_dimension_metrics(
-            metric_results, dim, sort_keys
-        )
+        dimension_metrics[f"average_{dim}_metric"] = calculate_dimension_metrics(metric_results, dim, sort_keys)
 
     summary = {
         "total_samples_num": len(metric_results),
@@ -334,8 +366,9 @@ def write_score(run_save_dir, summary, score_dict_per_sample=None):
     with open(score_path, "w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
         writer.writerow(["metric_type", "dimension", "value", "count"])
-        writer.writerow(["overall", "-", round(summary["average_overall_metric"] * 100, 2),
-                         summary["total_samples_num"]])
+        writer.writerow(
+            ["overall", "-", round(summary["average_overall_metric"] * 100, 2), summary["total_samples_num"]]
+        )
         for dim_key, label in [
             ("average_token_length_metric", "token_length"),
             ("average_contextual_requirement_metric", "contextual_requirement"),
@@ -346,8 +379,14 @@ def write_score(run_save_dir, summary, score_dict_per_sample=None):
         ]:
             for sub_key, value in summary.get(dim_key, {}).items():
                 writer.writerow([label, sub_key, round(value * 100, 2), ""])
-            writer.writerow([f"Avg ({label})", "", round(np.mean(list(summary.get(dim_key, {}).values())) * 100, 2)
-                             if summary.get(dim_key) else "", ""])
+            writer.writerow(
+                [
+                    f"Avg ({label})",
+                    "",
+                    round(np.mean(list(summary.get(dim_key, {}).values())) * 100, 2) if summary.get(dim_key) else "",
+                    "",
+                ]
+            )
     print(f"结果写入: {score_path}")
 
 
@@ -375,6 +414,7 @@ if __name__ == "__main__":
     if emb_conf and emb_conf.get("model_name"):
         try:
             from sentence_transformers import SentenceTransformer
+
             emb_device_id = emb_conf.get("device_id", 0)
             emb_device = f"cuda:{emb_device_id}"
             print(f"正在加载 embedding 模型: {emb_conf['model_name']} (device={emb_device})")
@@ -434,7 +474,13 @@ if __name__ == "__main__":
 
             # reranker 实际压缩率(rate.csv)聚合
             if has_reranker and run_config["reranker_config"].get("selection_mode") in [
-                "cluster", "topp", "cluster-zscore", "topk", "threshold", "pure-topk", "shunt",
+                "cluster",
+                "topp",
+                "cluster-zscore",
+                "topk",
+                "threshold",
+                "pure-topk",
+                "shunt",
             ]:
                 rate_csv = os.path.join(run_save_dir, "rate.csv")
                 if os.path.exists(rate_csv):
