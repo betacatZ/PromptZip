@@ -46,15 +46,29 @@ BFCL_PATH = os.path.join(REPO_ROOT, "experiments", "data", "eval.jsonl")
 
 DATASET2TASK = {
     # qa（宽松口径：问答/分类/检索/计数）
-    "narrativeqa": "qa", "qasper": "qa", "multifieldqa_en": "qa", "multifieldqa_zh": "qa",
-    "hotpotqa": "qa", "2wikimqa": "qa", "musique": "qa", "triviaqa": "qa",
-    "dureader": "qa", "trec": "qa", "lsht": "qa",
-    "passage_retrieval_en": "qa", "passage_retrieval_zh": "qa", "passage_count": "qa",
+    "narrativeqa": "qa",
+    "qasper": "qa",
+    "multifieldqa_en": "qa",
+    "multifieldqa_zh": "qa",
+    "hotpotqa": "qa",
+    "2wikimqa": "qa",
+    "musique": "qa",
+    "triviaqa": "qa",
+    "dureader": "qa",
+    "trec": "qa",
+    "lsht": "qa",
+    "passage_retrieval_en": "qa",
+    "passage_retrieval_zh": "qa",
+    "passage_count": "qa",
     # summarize
-    "gov_report": "summarize", "qmsum": "summarize", "multi_news": "summarize",
-    "vcsum": "summarize", "samsum": "summarize",
+    "gov_report": "summarize",
+    "qmsum": "summarize",
+    "multi_news": "summarize",
+    "vcsum": "summarize",
+    "samsum": "summarize",
     # other（代码补全，无 QA/总结信号）
-    "lcc": "other", "repobench-p": "other",
+    "lcc": "other",
+    "repobench-p": "other",
     # BFCL 全部 tool_call
     "BFCL": "tool_call",
 }
@@ -73,8 +87,11 @@ SMOKE_CASES = [
     ("What is the refund policy for December orders?", "You are a helpful assistant.", "qa"),
     ("Qwen2.5 的上下文窗口是多大？", "You are a helpful assistant.", "qa"),
     ("这部小说的主角最后怎么样了？", "你是一个阅读助手。", "qa"),
-    ("how many unique paragraphs are there in the given set of paragraphs after removing duplicates?",
-     "You are a helpful assistant.", "qa"),
+    (
+        "how many unique paragraphs are there in the given set of paragraphs after removing duplicates?",
+        "You are a helpful assistant.",
+        "qa",
+    ),
     # QA：关键词查询（无信号 -> fallback system 的 QA 助手模板）
     ("iPhone 15 价格", "你是一个中文问答助手。请根据给定文章回答问题。", "qa"),
     ("qwen2.5 context window", "You are a QA assistant. Answer the question based on the given documents.", "qa"),
@@ -93,13 +110,73 @@ SMOKE_CASES = [
     # tool_call：用户显式要求
     ("调用搜索工具查一下量子计算的最新进展", "You are a helpful assistant.", "tool_call"),
     ("Return only the tool calls for the CURRENT user turn.", "You are an expert in composing functions.", "tool_call"),
-    # other：闲聊/无任务信号
+    # other：闲聊/寒暄/无任务信号
     ("你好", "You are a helpful assistant.", "other"),
     ("hello", "You are a helpful assistant.", "other"),
     ("讲个笑话", "You are a helpful assistant.", "other"),
-    # 边界：粘贴长内容 + 简短问句 -> qa；润色请求 -> other
-    ("这是什么意思？", "You are a helpful assistant.", "qa"),
+    ("在吗？", "You are a helpful assistant.", "other"),
+    ("谢谢，明白了", "You are a helpful assistant.", "other"),
+    ("今天心情不太好", "You are a helpful assistant.", "other"),
+    ("再见", "You are a helpful assistant.", "other"),
+    # other：写作/翻译/润色等非 QA 非总结任务（真实流量常见形态）
+    ("帮我翻译一下这段话成英文", "You are a helpful assistant.", "other"),
+    ("translate this paragraph to French", "You are a helpful assistant.", "other"),
+    ("帮我写一封请假邮件", "You are a helpful assistant.", "other"),
+    ("写一首关于秋天的诗", "You are a helpful assistant.", "other"),
     ("帮我润色这段话", "You are a helpful assistant.", "other"),
+    # 边界：粘贴长内容 + 简短问句 -> qa；真问句不被寒暄负向误伤
+    ("这是什么意思？", "You are a helpful assistant.", "qa"),
+    ("文档里有说怎么做吗？", "You are a helpful assistant.", "qa"),
+    # ---- 疑问句形态的非 QA（report/QUESTION_FORM_NON_QA.md 六类）----
+    # A 疑问形式祈使：问号是礼貌包装，意图由动词决定
+    ("可以帮我把这段话翻译成英文吗？", "You are a helpful assistant.", "other"),
+    ("你能写一首诗吗？", "You are a helpful assistant.", "other"),
+    ("可以帮我查一下明天的天气吗？", "You are a helpful assistant.", "other"),
+    ("你能帮我总结一下这篇文章吗？", "You are a helpful assistant.", "summarize"),
+    ("Can you summarize this report?", "You are a helpful assistant.", "summarize"),
+    # B 对话中间态：质疑/追问上一轮
+    ("你确定吗？", "You are a helpful assistant.", "other"),
+    ("你刚才说的是什么？", "You are a helpful assistant.", "other"),
+    # C 助手元问题：能力/身份询问
+    ("你能做什么？", "You are a helpful assistant.", "other"),
+    ("what can you do?", "You are a helpful assistant.", "other"),
+    ("你是什么模型？", "You are a helpful assistant.", "other"),
+    ("who are you?", "You are a helpful assistant.", "other"),
+    # D 意见征询：问主观偏好
+    ("What do you think about this?", "You are a helpful assistant.", "other"),
+    ("你觉得哪个方案好？", "You are a helpful assistant.", "other"),
+    # E 反问句：不期待回答
+    ("这难道不是明摆着的吗？", "You are a helpful assistant.", "other"),
+    ("难道就我一个人觉得贵吗？", "You are a helpful assistant.", "other"),
+    # F 对照：请求框架内的真 QA 不被降权误伤
+    ("你能告诉我退款政策是什么吗？", "You are a helpful assistant.", "qa"),
+    ("Could you tell me what the refund policy is?", "You are a helpful assistant.", "qa"),
+    # ---- 非 QA 任务的问句形态（LongBench-Pro/v2 鲁棒性，PLAN_task_rules_robustness.md）----
+    # MC 选项模板（引用对齐/选择题形态）-> other（问句是选项模板噪声）
+    ("以下哪项说法正确？\nA、选项一\nB、选项二", "You are a helpful assistant.", "other"),
+    ("Which one is correct? Output the answer option letter ('A'或'B'或'C').", "You are a helpful assistant.", "other"),
+    # 排序祈使 -> other
+    ("请根据时间顺序恢复下列事件的排序", "You are a helpful assistant.", "other"),
+    ("Please rearrange the fragments in chronological order.", "You are a helpful assistant.", "other"),
+    # 矛盾检查 -> other
+    ("请找出文档中的矛盾之处", "You are a helpful assistant.", "other"),
+    ("Identify any inconsistencies between the two sections.", "You are a helpful assistant.", "other"),
+    # 版本对比 -> other
+    ("对比两个版本的差异并说明", "You are a helpful assistant.", "other"),
+    # 计算祈使 -> other（"相差多少年"是数值推理不是文档问答）
+    ("请计算 2024 与 1998 相差多少年", "You are a helpful assistant.", "other"),
+    # 翻译祈使 -> other
+    ("请把这段话翻译成英文", "You are a helpful assistant.", "other"),
+    # 引用对齐："Generated Summary:" 在文本中段（非末尾）-> 非 summarize
+    ("Here is the text. Generated Summary: first sentence.\nPlease align Sentence 1 to its source.", "You are a helpful assistant.", "other"),
+    # T4 zh 祈使形态 -> summarize
+    ("请将全文整理成一段不超过200字的摘要", "You are a helpful assistant.", "summarize"),
+    ("以此形成一篇摘要，不超过150字", "You are a helpful assistant.", "summarize"),
+    # en 生成式祈使 -> summarize
+    ("Based on the text, generate a summary of no more than 200 words.", "You are a helpful assistant.", "summarize"),
+    # 对照：真问句不被 MC/祈使负向误伤
+    ("What is the average magnetic moment per column in these films?", "You are a helpful assistant.", "qa"),
+    ("文档里提到的毛利率是多少？", "You are a helpful assistant.", "qa"),
 ]
 
 # long_text 触发用：冒烟集统一给一段超阈值的占位长文本
@@ -109,6 +186,7 @@ SMOKE_LONG_TEXT = "背景文档。" * 2000  # 10000 字符 > 默认阈值
 # ----------------------------------------------------------------------------
 # 数据加载与三段构造
 # ----------------------------------------------------------------------------
+
 
 def load_longbench(limit=None):
     """yield (tag, system, user, long_text, expected)；tag=子集名。"""
@@ -147,6 +225,7 @@ def load_all(limit=None):
 # 评测
 # ----------------------------------------------------------------------------
 
+
 def run_smoke(min_long_chars):
     print("=" * 70)
     print("① 冒烟集（手写真实流量，必须 100%）")
@@ -182,8 +261,17 @@ def run_full(samples, min_long_chars, mode="pipeline"):
 def _evaluate(rows, min_long_chars, mode):
     n_total = 0
     n_correct = 0
-    per_ds = defaultdict(lambda: {"n": 0, "correct": 0, "exempt_n": 0, "exempt_correct": 0,
-                                  "source": Counter(), "errors": [], "total": 0})
+    per_ds = defaultdict(
+        lambda: {
+            "n": 0,
+            "correct": 0,
+            "exempt_n": 0,
+            "exempt_correct": 0,
+            "source": Counter(),
+            "errors": [],
+            "total": 0,
+        }
+    )
     confusion = Counter()  # (expected, got) -> n
     triggered = Counter()  # 触发率统计（long_text 超阈值）
     triggered_total = Counter()  # 每子集总行数（触发率分母）
@@ -222,11 +310,16 @@ def _evaluate(rows, min_long_chars, mode):
         if is_exempt:
             entry["exempt_n"] += 1
         elif not correct and len(entry["errors"]) < 3:
-            entry["errors"].append({
-                "user": user[:200], "expected": expected, "got": got,
-                "source": result["source"], "scores": result["scores"],
-                "hits": {k: v for k, v in result["hits"].items() if v},
-            })
+            entry["errors"].append(
+                {
+                    "user": user[:200],
+                    "expected": expected,
+                    "got": got,
+                    "source": result["source"],
+                    "scores": result["scores"],
+                    "hits": {k: v for k, v in result["hits"].items() if v},
+                }
+            )
 
     labels = ["qa", "summarize", "tool_call", "other"]
     prf = {}
@@ -240,8 +333,11 @@ def _evaluate(rows, min_long_chars, mode):
         prf[lab] = (prec, rec, f1)
 
     return {
-        "n_total": n_total, "n_correct": n_correct,
-        "per_ds": dict(per_ds), "confusion": dict(confusion), "prf": prf,
+        "n_total": n_total,
+        "n_correct": n_correct,
+        "per_ds": dict(per_ds),
+        "confusion": dict(confusion),
+        "prf": prf,
         "triggered": dict(triggered),
     }
 
@@ -342,9 +438,11 @@ def main():
         ok = False
     else:
         print("  全部通过 ✓")
-        print(f"  总体 {acc:.4f} | tool_call R={tool_recall} | qa R={qa_recall:.3f} | "
-              f"非qmsum summarize R={non_qmsum_sum_tp}/{non_qmsum_sum_total} | "
-              f"qmsum {qmsum_correct}/{qmsum_n}（豁免，仅报告）")
+        print(
+            f"  总体 {acc:.4f} | tool_call R={tool_recall} | qa R={qa_recall:.3f} | "
+            f"非qmsum summarize R={non_qmsum_sum_tp}/{non_qmsum_sum_total} | "
+            f"qmsum {qmsum_correct}/{qmsum_n}（豁免，仅报告）"
+        )
 
     # 触发率报告
     print("\n触发率（long_text > 阈值 比例，未触发行不进标签评测）:")
@@ -352,7 +450,7 @@ def main():
         n_trig = rep["triggered"].get(ds, 0)
         total_n = entry["total"]
         if total_n:
-            print(f"  {ds:24s} {n_trig}/{total_n} = {n_trig/total_n:.2f}")
+            print(f"  {ds:24s} {n_trig}/{total_n} = {n_trig / total_n:.2f}")
 
     sys.exit(0 if ok else 1)
 

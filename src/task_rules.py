@@ -51,7 +51,8 @@ TOOL_CALL_RULES = [
     (re.compile(r"function[- ]calling task", re.I), 3.0, "bfcl_fc_task"),
     (re.compile(r"current user turn", re.I), 2.0, "bfcl_current_turn"),
     (re.compile(r"decide (?:which|what) tool", re.I), 2.0, "user_decide_tool"),
-    (re.compile(r"(?:调用|使用|帮我调|执行)[^。\n]{0,12}(?:工具|函数|接口|api)", re.I), 3.0, "zh_call_tool", True),
+    # 间隙排除反引号/引号：代码 diff 任务的 `示例使用`和`demo`函数`` 是叙述不是指令
+    (re.compile(r"(?:调用|使用|帮我调|执行)[^。\n`'\"「」]{0,12}(?:工具|函数|接口|api)", re.I), 3.0, "zh_call_tool", True),
     (re.compile(r"(?:调|用)一下[^。\n]{0,12}(?:工具|函数|接口)", re.I), 2.0, "zh_call_tool2", True),
     # 动词 + 工具名的祈使形态（"book a flight"/"send a message"）语义太宽，不在此判——
     # 纯 user 层判 tool 意图不可靠是已知边界，靠 system 工具模板 fallback 兜住。
@@ -72,20 +73,36 @@ SUMMARIZE_RULES = [
     # TL;DR 降权 + 次数封顶 2：网络文本里成片出现的是引用/定义不是请求
     # （triviaqa 有 passage 刷 8 次 TL;DR 的样例；真实请求 <=2 次）
     (re.compile(r"\btldr\b|\btl;dr\b", re.I), 1.0, "en_tldr", 2),
-    # 句尾生成锚点（samsum 的 "Dialogue: ...\nSummary:"）
-    (re.compile(r"summary\s*[:：]\s*$", re.I | re.M), 3.0, "en_summary_suffix"),
+    # 句尾生成锚点（samsum 的 "Dialogue: ...\nSummary:"）。
+    # 文本末尾锚 \Z（非行尾 $）：引用对齐任务的 "Generated Summary:" 行后还有选项内容，
+    # 行尾锚会误判 summarize（LongBench-Pro T5 实测 22 条）；samsum 的 "Summary:"
+    # 恰在文本末尾，\Z 两形态均命中
+    (re.compile(r"summary\s*[:：]\s*\Z", re.I), 3.0, "en_summary_suffix"),
     # -- 中文（祈使语境：行首/句首/请|帮我 之后。新闻正文"在总结…基础上"等叙述形态
     #    靠此语境要求天然不命中，见 SUMMARIZE_NEGATIVE_RULES 注释） --
     (re.compile(r"(?:^|[\n。！!？?]\s*|请|帮我|麻烦|给我)(?:帮我)?(?:给我)?(?:总结|概括|提炼)", re.I | re.M), 3.0, "zh_summary"),
+    # en 生成式祈使："generate a summary"（LB-Pro T4 en 29/60 靠此命中）。
+    # 要求冠词 a/an/the/one：引用对齐任务的 'Generate Summary'（无冠词引用块名）不中
+    (re.compile(r"\bgenerate\s+(?:a|an|the|one)\s+summary\b", re.I), 3.0, "en_generate_summary"),
+    # zh 生成式祈使："整理成一段摘要/以此形成一篇摘要/给出摘要/不超过X字的摘要"
+    # （LB-Pro T4 zh 的指令形态，zh_summary 的句首语境要求覆盖不到）
+    (re.compile(r"(?:整理|梳理|归纳|提炼)成[^。\n]{0,12}摘要|以此形成[^。\n]{0,8}摘要|给出摘要|输出摘要|字的摘要|的摘要[，,。]", re.I), 3.0, "zh_imperative_abstract"),
     (re.compile(r"会议纪要|写.{0,8}(?:纪要|摘要|总结)|生成.{0,8}(?:摘要|总结)|(?:会议)?总结助手", re.I), 3.0, "zh_write_summary"),
-    (re.compile(r"会议总结\s*[:：]\s*$", re.I | re.M), 3.0, "zh_meeting_summary_suffix"),
+    (re.compile(r"会议总结\s*[:：]\s*\Z", re.I | re.M), 3.0, "zh_meeting_summary_suffix"),
     (re.compile(r"要点[:：]", re.I), 1.5, "zh_key_points"),
 ]
 
 # 指代型"摘要"负向排除：命中则抵消 summarize 信号（不计入任何类得分）
 SUMMARIZE_NEGATIVE_RULES = [
     (re.compile(r"the (?:text|following|article|passage|abstract) (?:summarizes|is a summary of|provides a summary)", re.I), "neg_descriptive_summary"),
-    (re.compile(r"(?:以下|下面|这个|上述|该)?(?:是)?(?:一个|一段)?摘要[:：]?", re.I), "neg_zh_referential_abstract"),
+    # 指代型要求指代前缀（以下/下面/上述/该/这是…摘要）：全可选形态会把 T4 zh 的
+    # "整理成一段摘要"祈使误杀（实测 60/60 全灭）。裸"摘要"字样在祈使语境下是目标不是指代
+    (re.compile(r"(?:以下|下面|上述|该|这是)[^。\n]{0,12}摘要|根据摘要|摘要所属|摘要来判断", re.I), "neg_zh_referential_abstract"),
+    # 引用对齐任务形态（LB-Pro T5）：对已生成摘要做出处标注——"生成的摘要/摘要句子/
+    # 引用对齐/最小充分出处"都是引用已有摘要，不是总结指令
+    (re.compile(
+        r"生成的摘要|(?:所)?生成摘要[中包]|摘要句子|引用对齐|最小充分出处|标注[^。\n]{0,12}出处|对(?:下列|以下|所|生成|下方|待对齐)[^。\n]{0,6}摘要", re.I),
+        "neg_citation_align"),
     (re.compile(r"根据摘要|摘要所属|摘要来判断", re.I), "neg_zh_based_on_abstract"),
     (re.compile(r"\bis a summary of\b", re.I), "neg_en_is_summary_of"),
     # 叙述形态：描述既有研究/文章/技术做了什么，不是总结指令
@@ -100,13 +117,104 @@ SUMMARIZE_NEGATIVE_RULES = [
 
 # 寒暄/确认型问句负向排除：单发的"在吗/好吗/行吗/可以吗"是社交确认不是知识提问，
 # 不应判 qa。限短文本（<=20 字符）整体即该形态，避免误伤"文档里有说怎么做吗？"这类真问句。
+# 其余负向形态（详见 report/QUESTION_FORM_NON_QA.md）：
+#   元问题（问助手自身能力/身份）、反问句、意见征询、对话中间态（质疑/追问上一轮）
 QA_NEGATIVE_RULES = [
     (re.compile(r"^.{0,16}(?:在|好|行|可以|对了|明白|清楚|懂)(?:吗|么)[?？。!]?\s*$", re.I), "neg_zh_greeting_question"),
     (re.compile(r"^(?:are|is)\s+you\s+(?:there|still\s+there|ok)[?!.]?\s*$", re.I), "neg_en_greeting_question"),
+    # C 元问题：你能做什么/你是什么模型/who are you——问助手自身，指向不在文档。
+    # "你能/会"分支要求紧跟能力动词字（做/干/处理/完成…），否则"你能告诉我 X"这类
+    # 礼貌 doc-QA 会被误伤；(?!帮|给) 排除"你能帮我…"请求形态
+    (re.compile(
+        r"^(?:你(?:能|会|可以|支持)(?!帮|给)[做干处理完成]|你(?:是什[么麽]|是谁|叫什[么麽])|"
+        r"what can you do|who are you|what are you|what model are you)[^。？！!]*[?？!]?\s*$", re.I), "neg_meta_question"),
+    # E 反问句：难道…吗——不期待回答
+    (re.compile(r"(?:难道|岂不是|怎么会不|就(?:我|咱)一个人)[^。？！]*[?？]?$", re.I), "neg_rhetorical_question"),
+    # D 意见征询：你觉得/你怎么看/what do you think——问主观偏好无事实答案
+    # （限句首形态；"文档作者觉得…"问的是文档内容，不命中）
+    (re.compile(r"^(?:what do you think|do you (?:like|prefer|think)|how do you (?:like|feel about)|你觉得|你怎么看|你更喜欢|你们觉得)[^。？！]*[?？]?\s*$", re.I), "neg_opinion_question"),
+    # B 对话中间态：你确定/你刚才说的——指向上一轮回答，显式对话指涉形态
+    # （"文档里真的是这么说的吗？"指向文档，不命中）
+    (re.compile(r"^(?:你确定|你说的是真的|真的吗|你刚才说的|你是说)[^。]*[?？]?\s*$", re.I), "neg_dialogue_followup"),
 ]
 
 # 问答：宽松口径（问答/分类/检索/计数都算 qa）。注意 查/搜索/find 不作 qa 锚点
 # （它们是工具意图的典型形态，加了会误伤 tool_call 的 fallback 通路）。
+# 以下任务形态负向规则（命中 → qa 清零 → 无信号走 system fallback）来自
+# LongBench-Pro / LongBench-v2 鲁棒性测试（见 PLAN_task_rules_robustness.md）：
+# 非 QA 任务借用问句形态（选择题/排序/矛盾检查/计算/翻译），问句信号是形态噪声不是任务意图。
+NON_QA_FORM_RULES = [
+    # MC 选项模板：引号形 "答案选项字母（'A'或'B'…）" + 双连行枚举 "A、…\nB、"/"(A) …\n(B) …"。
+    # 双连行要求两行连续才命中，单行 "A." 不构成模板（防散文偶然项）。
+    # 注意：真 MC-QA（如 LB-Pro T3/v2 QA 域）也是该形态，被清零后掉 other——
+    # 低召回高精度口径下的已知代价（线上靠 system QA 模板兜底）。
+    (re.compile(r"['‘’]A['’]?或['‘’]?B|答案选项字母\s*[（(]['‘’]?A['’]?", re.I), "neg_mc_quoted"),
+    (re.compile(r"\n\s*(?:[（(][A-D][)）]|[A-D][、.．)）])\s*\S[^\n]*\n\s*(?:[（(][A-D][)）]|[A-D][、.．)）])", re.I), "neg_mc_enum"),
+    # 排序祈使：恢复…排序 / 按…降序（升序/先后顺序）/ rearrange / chronological order
+    # （排序重构任务的指令形态；chronological ordering 叙述形在代码/文摘里由上下文压制）
+    (re.compile(r"恢复.{0,20}(?:排序|顺序)|按.{0,20}(?:降序|升序|先后顺序)|\brearrange\b|chronological order", re.I), "neg_rearrange"),
+    # 矛盾/一致性检查：矛盾之处/冲突之处/不一致之处 + 动词守卫的英文形态
+    # （裸 inconsistenc/contradict 在 passage_retrieval 文摘正文高频出现，必须加 find/identify 守卫）
+    (re.compile(r"矛盾之处|冲突之处|不一致之处|(?:find|identify|locate|check)[^.]{0,30}(?:inconsistenc|contradict)", re.I | re.S), "neg_contradiction"),
+    # 版本对比：对比…版本 / 两个版本…差异 / compare … versions
+    (re.compile(r"对比.{0,20}版本|两个版本.{0,10}差异|compare.{0,40}versions", re.I), "neg_version_diff"),
+    # 引用对齐（问句内共现形态）：which/what + violat 同句 / "找出…违反"——
+    # 违规检查任务的问句形态（"Which regulation do the cases violate?"）
+    (re.compile(r"(?:which|what)[^。？?\n]{0,100}violat|violat[^。？?\n]{0,60}\?|(?:违反|违规)[^。？?\n]{0,30}[?？]|找出[^。\n]{0,30}(?:违反|违规)", re.I), "neg_violation_check"),
+    # 计算祈使：行首 请?计算/算一算 / Compute|Calculate / 相差多少|相隔多少。
+    # 行首锚限制 zh 祈使形态（正文叙述里的"计算出/计算出"不带行首）；en 动词取整词
+    (re.compile(r"(?:^|\n)\s*(?:请)?(?:计算|算一算)|\b(?:Compute|Calculate)\b|相差多少|相隔多少", re.I | re.M), "neg_compute"),
+    # 翻译祈使：翻译…成 / translate … into（翻译任务的指令形态，非问句）
+    (re.compile(r"翻译.{0,20}成|translate.{0,60}into", re.I | re.S), "neg_translate"),
+    # 排序重构扩展形态：打乱/复原（scrambled/reconstruct）+ arrange…order / 按…顺序进行排序。
+    # T2 的指令措辞变体（"in the order of the article"等），T1 检索排序的排序词同属 other 任务
+    (re.compile(r"\bscrambled\b|\breconstruct\b|restore the (?:original )?order|打乱|"
+                r"按.{0,16}(?:顺序|排序)(?:进行|排列|输出)|\barrange\b[^\n。]{0,60}\border\b|in the order of", re.I),
+        "neg_sequence_reconstruct"),
+    # 引用对齐扩展：指令动词 + citation/source 共现（"identify the original Part number(s)"）。
+    # 单独 "citation/source" 不作锚点（passage 正文 "Presidential Unit Citation" 高频）；
+    # "original location" 叙述形态排除，只收 original part/paragraph
+    (re.compile(r"(?:label|align|annotate|provide|find|identify)[^\n。]{0,60}(?:citation|source|出处)|"
+                r"(?:citation|出处)[^\n。]{0,30}(?:for each|alignment|标注)|"
+                r"original (?:parts?|paragraphs?)\b|numbering rule for citation|minimum sufficient (?:source|part|paragraph)", re.I),
+        "neg_citation_align2"),
+    # 违规检查扩展：检查/check + 违反/violat 共现 / violations of the rule / 给出…差异。
+    # 裸 "违反" 不作锚点（lsht 新闻正文 7 条叙述命中）；问句内共现形态由 neg_violation_check 覆盖
+    (re.compile(r"(?:检查|check)[^。\n?？]{0,40}(?:违反|违规|violat)|violations? of the rule|(?:给出|列出)[^。\n]{0,20}差异", re.I),
+        "neg_violation_check2"),
+    # 一致性检查补充形态：inconsistent chapters / 违规段落 / compliance check / assess whether
+    (re.compile(r"inconsistent chapters?|违规段落|违反[”\"]?后|compliance (?:testing|check)|assess whether", re.I), "neg_consistency_check3"),
+    # 代码/版本演进分析："Identify which … changed" / in V2.0 compared to V1.0 / refactored。
+    # "were changed" 单独不用（passage 叙述 "the call letters were changed to WBLY" 误伤）
+    (re.compile(r"identify which[^。?\n]{0,60}chang|in V2\.0 compared to V1\.0|\brefactored?\b", re.I), "neg_api_evolution"),
+    # 引用对齐 zh 直陈形态（qa 侧）：引用对齐/摘要出处——出处标注任务不是问答
+    (re.compile(r"引用对齐|摘要出处", re.I), "neg_citation_align3"),
+    # 定位/分析类任务形态（T5 摘要匹配 / T7 找段落 / T9 代码分析）：
+    # "match … summary sentences"、"identify which paragraphs"、"找出…给出…编号"、
+    # "analyze/identify + method/class/function/code"——产出是位置/结构不是知识答案
+    (re.compile(
+        r"match[^。\n]{0,50}(?:abstract|summary sentence)|"
+        r"identify which paragraphs|找出[^。\n]{0,40}(?:给出|所在).{0,12}编号|"
+        r"(?:analyze|identify)[^。\n]{0,50}(?:method|class|function|code|module)", re.I), "neg_locate_analysis"),
+    # 违规段落定位（T7 规则核验）："paragraph numbers where the violation occurs"
+    # —— locate 型产出（位置编号），不是知识答案
+    (re.compile(r"paragraph numbers? where the violation|violation occurs", re.I), "neg_violation_locate"),
+    # 规则核验任务前导（T7）："You are given a specific rule: …" —— 以给定规则审查文本
+    (re.compile(r"You are given a specific rule", re.I), "neg_given_rule"),
+    # 格式修正定位（T7）："应修改为 / 应改为" —— 找出需修正的句子位置
+    (re.compile(r"应修改为|应改为", re.I), "neg_format_fix"),
+    # 摘要出处定位扩展（T5）："locate its (precise) origin" —— 摘要句出处标注
+    (re.compile(r"locate[^。？?\n]{0,40}(?:precise )?origin", re.I), "neg_locate_origin"),
+    # API 版本对读（T9）："API Evolution" / 同句 V1.0…V2.0 对比
+    (re.compile(r"API Evolution|V1\.0[^。？?\n]{0,100}V2\.0|V2\.0[^。？?\n]{0,100}V1\.0", re.I), "neg_api_version_pair"),
+    # 因果顺序重组（T2 变体）："causal and logical order" / "organize this(these) statements"
+    (re.compile(r"causal and logical order|organize th(?:is|ese) statements?", re.I), "neg_causal_order"),
+    # 代码文件清点（T9）："list all … files in the … directory"
+    (re.compile(r"list all [^\n。]{0,80}files in the", re.I), "neg_list_files_dir"),
+    # 弃用模块清点（T9）："which modules is/are now deprecated"
+    (re.compile(r"which modules (?:is|are) now deprecated", re.I), "neg_deprecated_modules"),
+]
+
 QA_RULES = [
     # -- 英文疑问词（句首或独立出现） --
     (re.compile(r"(?:^|[\n.!?]\s*)?(?:what|where|when|why|who|whom|which)\b", re.I), 2.0, "en_wh"),
@@ -129,6 +237,9 @@ QA_RULES = [
     (re.compile(r"count how many|how many unique", re.I), 2.5, "cnt_how_many"),
     (re.compile(r"answer the (?:question|query)|only give me the answer|answer the question based", re.I), 2.5, "ans_answer_question"),
     (re.compile(r"回答.{0,6}问题|请根据.{0,10}(?:回答|文章)", re.I), 2.5, "ans_zh_answer"),
+    # 请求框架内的真 QA："告诉我/tell me" + 疑问内容共现（"你能告诉我 X 是什么吗"）。
+    # 单独"tell me"不作锚点（"tell me a joke"是 other）；由 _match_rules 的组合逻辑判定
+    (re.compile(r"(?:告诉我|tell me)", re.I), 2.0, "ans_tell_me", 3),
 ]
 
 # 代码密度检测：压制代码文本里的 ?/疑问词（repobench 的三目 ?: 等）。
@@ -148,6 +259,15 @@ _NET_ABBREV_RE = re.compile(r"\btl;dr\b|\btldr\b", re.I)
 # samsum 的 input 是完整对话，里面的 ?/wh-词是聊天内容不是用户提问 -> 压制 qa。
 _DIALOGUE_LINE_RE = re.compile(r"(?:^|\n)[A-Za-z一-龥][\w 一-龥]{0,15}:\s*\S")
 _DIALOGUE_LINES_THRESHOLD = 3
+
+# 疑问形式的祈使句（礼貌请求）框架：句首是 你能/可以帮/Can you 等请求措辞时，
+# 疑问词只是礼貌包装，真实意图由动词决定（翻译/写作/查 -> other 或 tool_call）。
+# 不做负向清零——"你能告诉我 X 是什么吗"是合法 doc-QA 礼貌问法——而是把
+# 疑问词/问号驱动的 qa 分降为 0.5x，让意图动词规则（权重更高时）主导判定。
+_REQUEST_FORM_RE = re.compile(
+    r"^\s*(?:你(?:能|可以|可不可以|能不能|帮)|可以|能不能|请(?:帮|给)|"
+    r"(?:can|could|would|will)\s+you\b|please\s+(?:help|do|translate|write|summarize))", re.I
+)
 
 # 信号阈值：加权总分 >= 该值才视为"该文本携带了任务信号"（用于 fallback 判断）
 SIGNAL_THRESHOLD = 2.0
@@ -174,6 +294,11 @@ def _match_rules(rules, text):
 
 
 def _score(rules, text):
+    """加权总分（规则表 -> 匹配 -> 求和的便捷入口）。"""
+    return _score_from_hits(_match_rules(rules, text))
+
+
+def _score_from_hits(hits):
     """加权总分。
 
     单 pattern 多次命中默认计 min(n,3) 次（规则可自带更小 cap），防长文本刷分；
@@ -183,7 +308,7 @@ def _score(rules, text):
     import math
 
     total = 0.0
-    for name, weight, n, capped in _match_rules(rules, text):
+    for name, weight, n, capped in hits:
         if name == "question_mark":
             total += weight * min(math.sqrt(n), 3)
         else:
@@ -262,17 +387,32 @@ def classify_task_detailed(text: str) -> dict:
         }
 
     # 2) 负向排除先行：指代型"摘要"存在时，summarize 直接清零；
-    #    寒暄确认型问句（"在吗？"）存在时，qa 信号清零
+    #    寒暄确认型问句（"在吗？"）/ 非 QA 任务问句形态（MC 模板/排序/计算祈使…）存在时，qa 信号清零
     neg_hits = _match_rules(SUMMARIZE_NEGATIVE_RULES, text)
     sum_negated = bool(neg_hits)
-    qa_neg_hits = _match_rules(QA_NEGATIVE_RULES, text)
+    qa_neg_hits = _match_rules(QA_NEGATIVE_RULES, text) + _match_rules(NON_QA_FORM_RULES, text)
     qa_negated = bool(qa_neg_hits)
 
     sum_hits = _match_rules(SUMMARIZE_RULES, text)
     sum_score = 0.0 if sum_negated else _score(SUMMARIZE_RULES, text)
 
     qa_hits = _match_rules(QA_RULES, text)
-    qa_score = 0.0 if qa_negated else _score(QA_RULES, text)
+    # ans_tell_me 条件计分：要求同文本存在疑问信号（什么/what/how/?…）。
+    # "tell me a joke"/"告诉我你的名字"无疑问内容 -> 剔除该规则命中。
+    if any(h[0] == "ans_tell_me" for h in qa_hits) and not re.search(
+        r"(?:什么|哪|多少|为什么|怎么|怎样|谁|几|[?？]|what|which|who|when|where|why|how)", text, re.I
+    ):
+        qa_hits = [h for h in qa_hits if h[0] != "ans_tell_me"]
+    qa_score = 0.0 if qa_negated else _score_from_hits(qa_hits)
+
+    # 疑问形式祈使（礼貌请求）：疑问词是包装不是意图，降权让动词规则主导。
+    # ans_tell_me 已在上面的共现过滤里保证"告诉我 + 疑问内容"，是请求框架内的
+    # 真 QA——它的 2.0 分不参与降权，其余疑问信号 ×0.5。
+    if qa_score > 0 and _REQUEST_FORM_RE.search(text):
+        tell_me_score = 2.0 * min(sum(h[2] for h in qa_hits if h[0] == "ans_tell_me"), 3)
+        rest = qa_score - tell_me_score
+        if rest > 0:
+            qa_score = tell_me_score + rest * 0.5
 
     # 3) 噪声形态压制：代码文本 / 对话转写文本里 ?/疑问词是内容不是指令
     if is_code:
